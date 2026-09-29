@@ -1,0 +1,73 @@
+<main class="page">
+  <header class="page-head">
+    <h1>Usuários da organização</h1>
+    <p>Somente contas com o perfil administrador enxergam esta tela.</p>
+  </header>
+
+  <p class="notice" *ngIf="notice" [class.error]="noticeType === 'error'"
+    [class.success]="noticeType === 'success'">{{ notice }}</p>
+
+  <section class="panel">
+    <h2>Novo usuário</h2>
+    <form class="inline-form" (ngSubmit)="create()">
+      <label>Usuário
+        <input [(ngModel)]="newUsername" name="username" autocomplete="off"
+          pattern="[A-Za-z0-9_.\-]+" minlength="3" maxlength="120" required>
+      </label>
+      <label>Senha
+        <input [(ngModel)]="newPassword" name="password" type="password"
+          autocomplete="new-password" minlength="12" required>
+      </label>
+      <label>Perfil
+        <select [(ngModel)]="newRole" name="role">
+          <option value="user">Consulta</option>
+          <option value="admin">Administrador</option>
+        </select>
+      </label>
+      <button type="submit" [disabled]="saving || !newUsername.trim() || !newPassword">
+        {{ saving ? 'Criando...' : 'Criar' }}
+      </button>
+    </form>
+    <small class="hint">
+      Mínimo de 12 caracteres, com maiúscula, minúscula, número e símbolo. Não pode
+      conter o nome de usuário nem termos comuns.
+    </small>
+  </section>
+
+  <section class="panel">
+    <h2>Contas existentes</h2>
+    <p class="empty" *ngIf="loading">Carregando...</p>
+    <table class="grid" *ngIf="!loading && users.length">
+      <thead>
+        <tr>
+          <th>Usuário</th>
+          <th>Perfil</th>
+          <th>Situação</th>
+          <th>Último acesso</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let user of users">
+          <td>{{ user.username }}</td>
+          <td>{{ user.role === 'admin' ? 'Administrador' : 'Consulta' }}</td>
+          <td>
+            <span class="status-tag" [class.revoked]="!user.active"
+              [class.unverified]="user.active && user.locked">
+              {{ !user.active ? 'Desativado' : user.locked ? 'Bloqueado' : 'Ativo' }}
+            </span>
+          </td>
+          <td>{{ user.last_login_at ? (user.last_login_at | date:'dd/MM/yyyy HH:mm') : '—' }}</td>
+          <td class="row-actions">
+            <button type="button" *ngIf="!isSelf(user)" (click)="toggle(user)"
+              [class.revoke]="user.active">
+              {{ user.active ? 'Desativar' : 'Reativar' }}
+            </button>
+            <small *ngIf="isSelf(user)">sua conta</small>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="empty" *ngIf="!loading && !users.length">Nenhum usuário encontrado.</p>
+  </section>
+</main>

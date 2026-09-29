@@ -1,0 +1,42 @@
+<section class="login-shell">
+  <div class="login-atmosphere" aria-hidden="true"></div>
+  <form class="login-card" (ngSubmit)="submit()">
+    <div class="login-brand">
+      <span class="brand-mark">R</span>
+      <div>
+        <strong>RAG Regulatório</strong>
+        <small>Acesso autenticado · dados locais</small>
+      </div>
+    </div>
+    <h1>Entrar na organização</h1>
+    <p class="login-lead">
+      Consulte documentos regulatórios com citações obrigatórias.
+      Nada sai da sua máquina.
+    </p>
+
+    <p class="login-notice" *ngIf="notice">{{ notice }}</p>
+
+    <label>Organização
+      <input [(ngModel)]="tenant" name="tenant" autocomplete="organization"
+        placeholder="ex.: local" required>
+    </label>
+    <label>Usuário
+      <input [(ngModel)]="username" name="username" autocomplete="username"
+        placeholder="seu usuário" required>
+    </label>
+    <label>Senha
+      <input [(ngModel)]="password" name="password" type="password"
+        autocomplete="current-password" required>
+    </label>
+
+    <p class="login-error" *ngIf="error" role="alert">{{ error }}</p>
+
+    <button type="submit" [disabled]="loading || !password || !username.trim()">
+      {{ loading ? 'Entrando…' : 'Entrar' }}
+    </button>
+
+    <p class="login-foot">
+      Uso profissional · não diagnostica · não prescreve · não substitui julgamento clínico
+    </p>
+  </form>
+</section>

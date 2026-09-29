@@ -1,0 +1,25 @@
+# Override para habilitar GPU NVIDIA no Ollama.
+#
+# Requer (Linux/Ubuntu):
+# - driver NVIDIA no host (`nvidia-smi` funcionando);
+# - NVIDIA Container Toolkit instalado e configurado no Docker;
+# - validacao: `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
+#
+# Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Nota: apenas o daemon `ollama` recebe a GPU. O container `ollama-pull`
+# so faz download e gravacao em disco, e o container `api` (FastAPI +
+# ChromaDB + pypdf) e integralmente CPU/RAM.
+services:
+  ollama:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

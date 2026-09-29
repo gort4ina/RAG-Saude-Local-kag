@@ -1,0 +1,7 @@
+// A linguagem visual compartilhada mora em src/styles.scss, porque as telas
+// roteadas reaproveitam as mesmas classes e o encapsulamento de componente
+// impediria isso.
+:host {
+  display: block;
+  min-height: 100vh;
+}

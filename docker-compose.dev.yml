@@ -1,0 +1,10 @@
+# Override opcional para depuração local. Não use em ambiente compartilhado.
+services:
+  ollama:
+    ports:
+      - "127.0.0.1:11434:11434"
+  api:
+    environment:
+      APP_ENV: development
+    ports:
+      - "127.0.0.1:8000:8000"

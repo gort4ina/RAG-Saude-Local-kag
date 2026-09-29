@@ -1,0 +1,292 @@
+<main class="layout" [class.sidebar-open]="sidebarOpen">
+  <div class="sidebar-backdrop" *ngIf="sidebarOpen" (click)="sidebarOpen = false"></div>
+
+  <aside class="sidebar" [attr.aria-hidden]="!sidebarOpen && isNarrow ? 'true' : null">
+    <div class="sidebar-scroll">
+      <section class="sidebar-block">
+        <div class="section-head">
+          <p class="eyebrow">Base de conhecimento</p>
+          <button type="button" class="icon-btn sidebar-close" (click)="sidebarOpen = false"
+            aria-label="Fechar painel">×</button>
+        </div>
+
+        <label class="upload dropzone" *ngIf="auth.hasScope('documents:write')"
+          [class.disabled]="uploading"
+          [class.active]="dropzoneActive"
+          (dragover)="onDragOver($event)"
+          (dragleave)="onDragLeave($event)"
+          (drop)="onFileDrop($event)">
+          <input type="file" accept=".pdf,.txt,.md" (change)="onFileSelected($event)" [disabled]="uploading">
+          <span *ngIf="!uploading" class="dropzone-idle">
+            <span class="dropzone-glyph" aria-hidden="true">↑</span>
+            <strong>Solte o documento aqui</strong>
+            <em>PDF, TXT ou Markdown</em>
+          </span>
+          <span *ngIf="uploading" class="progress-shell">
+            <strong>Enviando… {{ uploadProgress }}%</strong>
+            <span class="progress-bar" role="progressbar"
+              [attr.aria-valuenow]="uploadProgress" aria-valuemin="0" aria-valuemax="100">
+              <span [style.width.%]="uploadProgress"></span>
+            </span>
+          </span>
+        </label>
+
+        <p class="notice" *ngIf="notice" [class.error]="noticeType === 'error'"
+          [class.success]="noticeType === 'success'" role="status">{{ notice }}</p>
+      </section>
+
+      <section class="documents sidebar-block">
+        <div class="section-head">
+          <p class="eyebrow">Documentos
+            <span class="count" *ngIf="documents.length">{{ documents.length }}</span>
+          </p>
+        </div>
+
+        <div class="document" *ngFor="let document of documents">
+          <span class="file-icon" aria-hidden="true">{{ fileExt(document.filename) }}</span>
+          <div class="document-info">
+            <strong [title]="document.filename">{{ document.filename }}</strong>
+            <small>{{ document.chunks }} trechos</small>
+            <small class="meta" *ngIf="document.regulation_number">
+              {{ document.regulation_number }}
+              <ng-container *ngIf="document.authority"> · {{ document.authority }}</ng-container>
+            </small>
+            <small class="status-tag"
+              [class.unverified]="document.status !== 'vigente_confirmada'"
+              [class.revoked]="document.status === 'revogada_confirmada'">
+              {{ document.status_label }}
+            </small>
+            <div class="status-actions" *ngIf="auth.hasScope('documents:validate')">
+              <button type="button" *ngIf="document.status !== 'vigente_confirmada'"
+                [disabled]="updatingDocumentId === document.document_id"
+                (click)="setDocumentStatus(document, 'vigente_confirmada')">Confirmar</button>
+              <button type="button" *ngIf="document.status === 'vigente_confirmada'"
+                [disabled]="updatingDocumentId === document.document_id"
+                (click)="setDocumentStatus(document, 'vigencia_nao_verificada')">Remover</button>
+              <button type="button" *ngIf="document.status !== 'revogada_confirmada'"
+                class="revoke"
+                [disabled]="updatingDocumentId === document.document_id"
+                (click)="setDocumentStatus(document, 'revogada_confirmada')">Revogada</button>
+            </div>
+          </div>
+          <button class="delete-document" type="button" title="Excluir documento"
+            *ngIf="auth.hasScope('documents:delete')" (click)="deleteDocument(document)">×</button>
+        </div>
+        <p class="empty" *ngIf="documents.length === 0">Nenhum documento indexado ainda.</p>
+      </section>
+
+      <section class="models sidebar-block" *ngIf="status.status$ | async as systemStatus">
+        <button type="button" class="section-toggle" (click)="systemPanelOpen = !systemPanelOpen"
+          [attr.aria-expanded]="systemPanelOpen">
+          <p class="eyebrow">Sistema</p>
+          <span aria-hidden="true">{{ systemPanelOpen ? '▾' : '▸' }}</span>
+        </button>
+
+        <div class="system-panel" *ngIf="systemPanelOpen">
+          <div class="stat-grid">
+            <div class="stat">
+              <em>Docs</em>
+              <strong>{{ systemStatus.documents_count }}</strong>
+            </div>
+            <div class="stat">
+              <em>Trechos</em>
+              <strong>{{ systemStatus.chunks_count }}</strong>
+            </div>
+            <div class="stat" *ngIf="systemStatus.hybrid_search_enabled">
+              <em>BM25</em>
+              <strong>{{ systemStatus.bm25_index_size }}</strong>
+            </div>
+          </div>
+
+          <div class="model-row">
+            <span>Chat</span>
+            <strong>{{ systemStatus.chat_model }}
+              <em *ngIf="!systemStatus.chat_model_installed" class="badge-warn">ausente</em>
+            </strong>
+          </div>
+          <div class="model-row">
+            <span>Embeddings</span>
+            <strong>{{ systemStatus.embedding_model }}
+              <em *ngIf="!systemStatus.embedding_model_installed" class="badge-warn">ausente</em>
+            </strong>
+          </div>
+
+          <p class="eyebrow mt-16">GPU / VRAM</p>
+          <p class="gpu-status" [class.online]="systemStatus.gpu_in_use"
+            [class.offline]="!systemStatus.gpu_in_use">
+            <span class="dot"></span>
+            {{ systemStatus.gpu_in_use ? 'Modelos na VRAM' : 'CPU / RAM' }}
+          </p>
+          <small class="gpu-detail">{{ systemStatus.gpu_detail }}</small>
+
+          <div class="vram-bar" *ngFor="let model of systemStatus.loaded_models">
+            <div class="vram-head">
+              <strong>{{ model.name }}</strong>
+              <em>{{ model.size_vram_mb }} / {{ model.size_mb }} MB</em>
+            </div>
+            <div class="vram-track">
+              <span [style.width.%]="model.size_mb ? (model.size_vram_mb * 100 / model.size_mb) : 0"
+                [class.on-gpu]="model.on_gpu"></span>
+            </div>
+            <small>{{ model.on_gpu ? 'residente em GPU' : 'residente em CPU' }}</small>
+          </div>
+          <p class="empty" *ngIf="!systemStatus.loaded_models.length">
+            Nenhum modelo residente. A primeira pergunta carrega a VRAM.
+          </p>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <section class="chat-shell">
+    <div class="chat-toolbar">
+      <button type="button" class="ghost-btn toolbar-menu" (click)="sidebarOpen = true"
+        aria-label="Abrir base de conhecimento">Base</button>
+      <div class="toolbar-title">
+        <strong>Consulta</strong>
+        <small *ngIf="messages.length">{{ messages.length }} mensagem(ns)</small>
+      </div>
+      <button type="button" class="ghost-btn" *ngIf="messages.length" (click)="clearChat()"
+        [disabled]="loading">Limpar</button>
+    </div>
+
+    <div class="intro" *ngIf="messages.length === 0">
+      <div class="hero-icon" aria-hidden="true">R</div>
+      <h1>Consulte a base com fontes rastreáveis</h1>
+      <p>
+        Pergunte sobre os documentos indexados. A resposta só é marcada como
+        fundamentada quando cita trechos reais — o KAG apenas orienta.
+      </p>
+      <div class="trust-row" aria-label="Garantias">
+        <span>Citações obrigatórias</span>
+        <span>Execução local</span>
+        <span>Sem diagnóstico clínico</span>
+      </div>
+      <div class="examples">
+        <button type="button" (click)="askExample('Quais os requisitos para a importação de medicamentos?')">
+          Requisitos para importação
+        </button>
+        <button type="button" (click)="askExample('Quais documentos costumam ser verificados na inspeção de farmácia?')">
+          Documentos para inspeção
+        </button>
+        <button type="button" (click)="askExample('O que diz a RDC 67/2007 sobre boas práticas de manipulação?')">
+          RDC 67/2007
+        </button>
+      </div>
+    </div>
+
+    <div class="messages" #messagesEl *ngIf="messages.length > 0">
+      <article *ngFor="let message of messages; trackBy: trackMessage"
+        [class]="'message ' + message.role"
+        [class.review]="message.requires_human_review"
+        [class.grounded]="message.grounded === true">
+        <span class="avatar" aria-hidden="true">
+          {{ message.role === 'user' ? 'Você' : 'R' }}
+        </span>
+        <div class="bubble">
+          <div class="bubble-meta" *ngIf="message.role === 'assistant' && !message.streaming && message.grounded !== undefined">
+            <span class="ground-badge" [class.yes]="message.grounded" [class.no]="!message.grounded">
+              {{ message.grounded ? 'Fundamentada' : 'Revisão necessária' }}
+            </span>
+          </div>
+
+          <p>{{ message.content }}<span class="caret" *ngIf="message.streaming">▍</span></p>
+
+          <small class="error-code" *ngIf="message.errorCode">código: {{ message.errorCode }}</small>
+
+          <div class="review" *ngIf="message.reviewReasons?.length">
+            <strong>Requer revisão humana</strong>
+            <ul>
+              <li *ngFor="let reason of message.reviewReasons">{{ reason }}</li>
+            </ul>
+          </div>
+
+          <details *ngIf="message.sources?.length">
+            <summary>
+              {{ message.sources?.length }} fonte(s)
+              {{ message.grounded === false ? 'recuperada(s), nenhuma citada' : 'citada(s)' }}
+            </summary>
+            <div class="source" *ngFor="let source of message.sources; index as index">
+              <strong>Fonte {{ index + 1 }} — {{ source.document }}</strong>
+              <small>
+                Página {{ source.page || 1 }} · relevância {{ source.score | percent:'1.0-0' }}
+                <ng-container *ngIf="source.article"> · {{ source.article }}</ng-container>
+              </small>
+              <small class="meta" *ngIf="source.regulation_number || source.authority">
+                <ng-container *ngIf="source.regulation_number">{{ source.regulation_number }}</ng-container>
+                <ng-container *ngIf="source.authority"> · {{ source.authority }}</ng-container>
+                <ng-container *ngIf="source.publication_date"> · {{ source.publication_date }}</ng-container>
+              </small>
+              <small class="status-tag"
+                [class.unverified]="source.status !== 'vigente_confirmada'"
+                [class.revoked]="source.status === 'revogada_confirmada'">
+                {{ source.status_label }}
+              </small>
+              <p>{{ source.excerpt }}</p>
+            </div>
+          </details>
+
+          <details *ngIf="message.relations?.length" class="kag">
+            <summary>
+              KAG · {{ message.relations?.length }} relação(ões) de orientação
+            </summary>
+            <p class="kag-hint">
+              Arestas do grafo do tenant. <strong>Não substituem</strong> a citação
+              dos trechos originais — a auditoria continua nas Fontes acima.
+            </p>
+            <ul class="kag-list">
+              <li *ngFor="let rel of message.relations">
+                <div class="kag-triple">
+                  <span class="kag-node subject">{{ rel.subject }}</span>
+                  <span class="kag-edge">{{ rel.relation }}</span>
+                  <span class="kag-node object">{{ rel.object }}</span>
+                </div>
+                <small>
+                  <span class="kag-status"
+                    [class.pending]="rel.validation_status === 'pendente_de_validacao'"
+                    [class.rejected]="rel.validation_status === 'rejeitada'">
+                    {{ rel.validation_status }}
+                  </span>
+                  <ng-container *ngIf="rel.source_span"> · {{ rel.source_span }}</ng-container>
+                  <ng-container *ngIf="rel.source_reference"> · {{ rel.source_reference }}</ng-container>
+                </small>
+              </li>
+            </ul>
+          </details>
+
+          <div class="metrics" *ngIf="message.durationMs || message.tokensPerSecond">
+            <span *ngIf="message.durationMs">
+              <em>latência</em> {{ message.durationMs | number:'1.0-0' }} ms
+            </span>
+            <span *ngIf="message.tokensPerSecond">
+              <em>throughput</em> {{ message.tokensPerSecond | number:'1.0-1' }} tok/s
+            </span>
+          </div>
+        </div>
+      </article>
+
+      <div class="thinking" *ngIf="loading && messages[messages.length - 1]?.streaming !== true">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+
+    <form class="composer" (ngSubmit)="send()">
+      <div class="composer-box">
+        <textarea #questionEl [(ngModel)]="question" name="question" maxlength="2000" rows="1"
+          placeholder="Pergunte com base nos documentos indexados…"
+          [disabled]="loading"
+          (input)="autoResize(questionEl)"
+          (keydown.enter)="onEnter($event)"></textarea>
+        <button type="button" class="cancel" *ngIf="loading" (click)="cancel()"
+          aria-label="Cancelar resposta">Parar</button>
+        <button type="submit" class="send" *ngIf="!loading" [disabled]="!question.trim()"
+          aria-label="Enviar pergunta">Enviar</button>
+      </div>
+      <small>
+        Conteúdo técnico baseado nos documentos indexados. Não diagnostica, não
+        prescreve e não substitui Anvisa, Vigilância Sanitária, CFF, CRF ou
+        julgamento clínico.
+      </small>
+    </form>
+  </section>
+</main>

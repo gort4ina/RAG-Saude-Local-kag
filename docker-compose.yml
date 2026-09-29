@@ -1,0 +1,217 @@
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [backend]
+
+  # ---------------------------------------------------------------------------
+  # Daemon do Ollama. Versao FIXADA.
+  #
+  # 0.32.6 foi escolhida porque o embeddinggemma exige >= 0.11.10 e porque
+  # OLLAMA_KV_CACHE_TYPE (quantizacao do KV cache, essencial para caber em
+  # 4 GB de VRAM) so existe a partir da serie 0.5.x. A versao anterior do
+  # projeto era 0.3.14, que nao suporta nenhuma das duas coisas.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:0.32.6
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      # Mantem o modelo residente por 10 min para evitar recarregar a cada
+      # pergunta (o load_duration domina a latencia da primeira resposta).
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-10m}
+      # 1 requisicao por vez: em 4 GB de VRAM, paralelismo causa offload
+      # para CPU e derruba a performance.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      # Chat + embeddings residentes simultaneamente.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+      # KV cache em q8_0 reduz pela metade a VRAM do contexto.
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-4096}
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    # Sem porta publicada, mas com egress para o daemon baixar modelos do
+    # registry.ollama.ai durante o bootstrap. A API continua falando com ele
+    # pelo hostname `ollama` na rede privada `backend`.
+    networks: [edge, backend]
+
+  # ---------------------------------------------------------------------------
+  # Job de bootstrap: baixa os modelos e encerra.
+  # Nao recebe reserva de GPU: `ollama pull` e download + gravacao em disco.
+  # ---------------------------------------------------------------------------
+  ollama-pull:
+    image: ollama/ollama:0.32.6
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:3b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-embeddinggemma}
+    command:
+      - -c
+      - |
+        set -e
+        echo "[ollama-pull] Modelo de chat: $$OLLAMA_CHAT_MODEL"
+        ollama pull "$$OLLAMA_CHAT_MODEL"
+        echo "[ollama-pull] Modelo de embeddings: $$OLLAMA_EMBEDDING_MODEL"
+        ollama pull "$$OLLAMA_EMBEDDING_MODEL"
+        echo "[ollama-pull] Modelos prontos."
+    restart: "no"
+    networks: [edge, backend]
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rag:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}@postgres:5432/rag
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [backend]
+
+  api:
+    build:
+      context: .
+      dockerfile: backend.Dockerfile
+    environment:
+      APP_NAME: ${APP_NAME:-RAG Regulatorio Farmaceutico}
+      APP_ENV: ${APP_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+asyncpg://rag:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}@postgres:5432/rag
+      JWT_SECRET: ${JWT_SECRET:?Defina JWT_SECRET no .env}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ISSUER: ${JWT_ISSUER:-rag-regulatorio}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-rag-regulatorio-web}
+      JWT_ACCESS_TOKEN_MINUTES: ${JWT_ACCESS_TOKEN_MINUTES:-15}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
+      REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-rag_refresh}
+      CSRF_COOKIE_NAME: ${CSRF_COOKIE_NAME:-rag_csrf}
+      CSRF_HEADER_NAME: ${CSRF_HEADER_NAME:-X-CSRF-Token}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      LOGIN_MAX_FAILED_ATTEMPTS: ${LOGIN_MAX_FAILED_ATTEMPTS:-5}
+      LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-20}
+      BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:-local}
+      BOOTSTRAP_TENANT_NAME: ${BOOTSTRAP_TENANT_NAME:-Organizacao local}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Defina BOOTSTRAP_ADMIN_PASSWORD no .env}
+      CHAT_RATE_LIMIT: ${CHAT_RATE_LIMIT:-10/minute}
+      UPLOAD_RATE_LIMIT: ${UPLOAD_RATE_LIMIT:-5/hour}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-5/minute}
+      REFRESH_RATE_LIMIT: ${REFRESH_RATE_LIMIT:-30/minute}
+      ADMIN_RATE_LIMIT: ${ADMIN_RATE_LIMIT:-20/minute}
+      DEFAULT_RATE_LIMIT: ${DEFAULT_RATE_LIMIT:-120/minute}
+      RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-memory://}
+      INFERENCE_MAX_CONCURRENCY: ${INFERENCE_MAX_CONCURRENCY:-1}
+      INFERENCE_QUEUE_WAIT_SECONDS: ${INFERENCE_QUEUE_WAIT_SECONDS:-0.10}
+
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:3b}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-embeddinggemma}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-4096}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-450}
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.1}
+      OLLAMA_HEALTH_TIMEOUT: ${OLLAMA_HEALTH_TIMEOUT:-5}
+      OLLAMA_CHAT_TIMEOUT: ${OLLAMA_CHAT_TIMEOUT:-300}
+      OLLAMA_EMBED_TIMEOUT: ${OLLAMA_EMBED_TIMEOUT:-120}
+
+      CHROMA_PATH: /app/data/chroma
+      UPLOAD_PATH: /app/data/uploads
+      COLLECTION_NAME: ${COLLECTION_NAME:-assuntos_regulatorios_embeddinggemma_v1}
+
+      RETRIEVAL_CANDIDATES: ${RETRIEVAL_CANDIDATES:-12}
+      MAX_CONTEXT_CHUNKS: ${MAX_CONTEXT_CHUNKS:-4}
+      MIN_RELEVANCE_SCORE: ${MIN_RELEVANCE_SCORE:-0.45}
+      HYBRID_SEARCH_ENABLED: ${HYBRID_SEARCH_ENABLED:-true}
+      RRF_K: ${RRF_K:-60}
+      DEDUP_SIMILARITY: ${DEDUP_SIMILARITY:-0.90}
+
+      CHUNK_CHARS: ${CHUNK_CHARS:-1900}
+      CHUNK_OVERLAP_CHARS: ${CHUNK_OVERLAP_CHARS:-285}
+      EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
+      MIN_CHARS_PER_PAGE: ${MIN_CHARS_PER_PAGE:-40}
+      MIN_EXTRACTION_RATIO: ${MIN_EXTRACTION_RATIO:-0.20}
+
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-15}
+      MAX_JSON_BODY_KB: ${MAX_JSON_BODY_KB:-256}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:4200,http://localhost:8080}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-}
+    expose:
+      - "8000"
+    volumes:
+      - rag_data:/app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3).status==200 else 1)\""
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 2g
+    mem_reservation: 512m
+    networks: [backend]
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [edge, backend]
+
+volumes:
+  ollama_data:
+  rag_data:
+  postgres_data:
+
+networks:
+  edge:
+  backend:
+    internal: true

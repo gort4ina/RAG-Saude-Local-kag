@@ -1,0 +1,39 @@
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">R</span>
+    <div>
+      <strong>RAG Regulatório</strong>
+      <small>Farmácia · execução local · RAG + KAG</small>
+    </div>
+  </div>
+
+  <nav class="main-nav" aria-label="Principal">
+    <a routerLink="/consulta" routerLinkActive="active">Consulta</a>
+    <a routerLink="/usuarios" routerLinkActive="active"
+      *ngIf="auth.hasScope('admin:manage')">Usuários</a>
+    <a routerLink="/auditoria" routerLinkActive="active"
+      *ngIf="auth.hasScope('audit:read')">Auditoria</a>
+  </nav>
+
+  <div class="status-group">
+    <div class="status-pill" *ngIf="status.health$ | async as health"
+      [class.ok]="health.ollama === 'online'"
+      [class.bad]="health.ollama !== 'online'">
+      <span class="pulse" aria-hidden="true"></span>
+      {{ health.ollama === 'online' ? 'Ollama' : 'Ollama off' }}
+    </div>
+    <div class="status-pill" *ngIf="status.status$ | async as systemStatus"
+      [class.ok]="systemStatus.gpu_in_use"
+      [class.warn]="!systemStatus.gpu_in_use"
+      [title]="systemStatus.gpu_detail">
+      <span class="pulse" aria-hidden="true"></span>
+      {{ systemStatus.gpu_in_use ? 'GPU' : 'CPU' }}
+    </div>
+    <div class="session-user">
+      <span class="user-chip">{{ auth.profile?.username }}</span>
+      <button type="button" class="ghost-btn" (click)="logout()">Sair</button>
+    </div>
+  </div>
+</header>
+
+<router-outlet></router-outlet>

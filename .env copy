@@ -1,0 +1,167 @@
+# =============================================================================
+# Identidade da aplicacao
+# =============================================================================
+APP_NAME=RAG Regulatorio Farmaceutico
+APP_ENV=development
+LOG_LEVEL=INFO
+
+# =============================================================================
+# Banco relacional, autenticação e autorização
+# =============================================================================
+# Gere valores diferentes antes de subir o ambiente. Exemplos:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+POSTGRES_PASSWORD=dOmO89VsruR1JKSpO81bS19uwKtBWwd0S9piB5nJM0o
+DATABASE_URL=postgresql+asyncpg://rag:dOmO89VsruR1JKSpO81bS19uwKtBWwd0S9piB5nJM0o@localhost:5432/rag
+JWT_SECRET=27fkKpepbeHEgbkKl2A5mQ5g8JxOGKG5Bd-gnxHwusGbyzKjBCGlM_FAygFNCjDH
+JWT_ALGORITHM=HS256
+JWT_ISSUER=rag-regulatorio
+JWT_AUDIENCE=rag-regulatorio-web
+
+# O access token e curto de proposito: ele nao pode ser revogado antes de
+# expirar, entao a janela de uso de um token roubado e essa. A sessao longa
+# fica no refresh token, que e rotativo e revogavel.
+JWT_ACCESS_TOKEN_MINUTES=15
+REFRESH_TOKEN_DAYS=7
+
+# Nomes dos cookies de sessao e do cabecalho anti-CSRF (double-submit).
+REFRESH_COOKIE_NAME=rag_refresh
+CSRF_COOKIE_NAME=rag_csrf
+CSRF_HEADER_NAME=X-CSRF-Token
+
+# ATIVE (true) assim que houver HTTPS. Sem isso o cookie de refresh trafega
+# em claro e pode ser capturado na rede.
+COOKIE_SECURE=false
+
+# Bloqueio temporario da conta apos tentativas malsucedidas seguidas.
+LOGIN_MAX_FAILED_ATTEMPTS=5
+LOGIN_LOCKOUT_MINUTES=15
+
+# Encerramento automatico da sessao no navegador apos inatividade.
+SESSION_IDLE_MINUTES=20
+
+# Bootstrap idempotente do primeiro acesso. Depois da criação, a alteração
+# desta senha no .env NÃO troca a senha já gravada no banco.
+BOOTSTRAP_TENANT_SLUG=local
+BOOTSTRAP_TENANT_NAME=Organizacao local
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_PASSWORD=AJmgoBOIQ2XVqLs7ABCruZtf
+
+CHAT_RATE_LIMIT=10/minute
+UPLOAD_RATE_LIMIT=5/hour
+LOGIN_RATE_LIMIT=5/minute
+REFRESH_RATE_LIMIT=30/minute
+ADMIN_RATE_LIMIT=20/minute
+
+# Teto aplicado a TODAS as rotas, inclusive as que nao tem limite proprio.
+DEFAULT_RATE_LIMIT=120/minute
+
+# `memory://` conta apenas dentro de um processo. Com mais de um worker o
+# limite real vira N vezes maior; use um backend compartilhado nesse caso.
+#   RATE_LIMIT_STORAGE_URI=redis://redis:6379/0
+RATE_LIMIT_STORAGE_URI=memory://
+
+INFERENCE_MAX_CONCURRENCY=1
+INFERENCE_QUEUE_WAIT_SECONDS=0.10
+
+# =============================================================================
+# Ollama e modelos locais
+# =============================================================================
+# Fora do Docker use http://localhost:11434
+# Dentro do Docker o compose ja injeta http://ollama:11434
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Modelo gerador. qwen2.5:3b em Q4_K_M ocupa ~2.0 GB de VRAM e cabe
+OLLAMA_CHAT_MODEL=qwen2.5:14b
+
+# Modelo de embeddings. ATENCAO: mudou de bge-m3 para embeddinggemma.
+# Sao dimensoes diferentes (bge-m3 = 1024, embeddinggemma = 768), portanto
+# NAO e possivel misturar vetores na mesma colecao. Veja COLLECTION_NAME.
+OLLAMA_EMBEDDING_MODEL=embeddinggemma
+
+# Janela de contexto do gerador. 4096 e o teto seguro para 4 GB de VRAM
+# com KV cache quantizado em q8_0.
+OLLAMA_CONTEXT_LENGTH=8192
+OLLAMA_NUM_PREDICT=450
+OLLAMA_TEMPERATURE=0.1
+
+OLLAMA_HEALTH_TIMEOUT=5
+OLLAMA_EMBED_TIMEOUT=120
+OLLAMA_CHAT_TIMEOUT=300
+
+# Variaveis lidas pelo daemon do Ollama (definidas no docker-compose.yml)
+OLLAMA_NUM_PARALLEL=1
+OLLAMA_MAX_LOADED_MODELS=2
+OLLAMA_KV_CACHE_TYPE=q8_0
+OLLAMA_KEEP_ALIVE=20m
+
+# =============================================================================
+# Banco vetorial
+# =============================================================================
+CHROMA_PATH=./data/chroma
+UPLOAD_PATH=./data/uploads
+
+# Colecao NOVA, criada para os vetores do embeddinggemma.
+# A colecao antiga (assuntos_regulatorios_farmaceuticos, vetores bge-m3)
+# NAO e apagada: ela continua no volume e pode ser reaberta trocando este
+# valor de volta junto com OLLAMA_EMBEDDING_MODEL=bge-m3.
+COLLECTION_NAME=assuntos_regulatorios_embeddinggemma_v1
+
+# =============================================================================
+# Recuperacao (busca hibrida)
+# =============================================================================
+# Candidatos recuperados por CADA perna da busca (vetorial e BM25)
+# antes da fusao por Reciprocal Rank Fusion.
+RETRIEVAL_CANDIDATES=12
+
+# Quantos chunks entram de fato no prompt final.
+MAX_CONTEXT_CHUNKS=4
+
+# Score minimo (0..1) para um chunk ser considerado relevante.
+# 0.45 e um valor INICIAL, nao calibrado. Rode `python -m eval.run_eval`
+# e ajuste com base no Recall@5 e na taxa de abstencao.
+MIN_RELEVANCE_SCORE=0.45
+
+HYBRID_SEARCH_ENABLED=true
+RRF_K=60
+DEDUP_SIMILARITY=0.90
+
+# =============================================================================
+# Chunking
+# =============================================================================
+# UNIDADE: CARACTERES, nao tokens. Nao ha tokenizador real no pipeline.
+# Referencia usada: ~3.8 caracteres por token em portugues.
+#   1900 caracteres ~= 500 tokens
+#    285 caracteres ~=  75 tokens
+CHUNK_CHARS=1900
+CHUNK_OVERLAP_CHARS=285
+EMBED_BATCH_SIZE=16
+
+# Validacao de extracao de PDF: paginas com menos caracteres que
+# MIN_CHARS_PER_PAGE sao consideradas sem texto util. Se menos de
+# MIN_EXTRACTION_RATIO das paginas tiverem texto, o upload e rejeitado
+# com a orientacao de que o PDF precisa de OCR.
+MIN_CHARS_PER_PAGE=40
+MIN_EXTRACTION_RATIO=0.20
+
+# =============================================================================
+# Uploads e HTTP
+# =============================================================================
+MAX_UPLOAD_MB=15
+ALLOWED_ORIGINS=http://localhost:4200,http://localhost:8080
+
+# Corpo maximo aceito fora do upload. Como as demais rotas so recebem JSON
+# pequeno, um valor baixo corta tentativas de exaustao de memoria.
+MAX_JSON_BODY_KB=256
+
+# Dominios aceitos no cabecalho Host. Em producao a aplicacao SE RECUSA A
+# SUBIR com `*`, porque um Host forjado envenena links e caches.
+#   ALLOWED_HOSTS=rag.suaempresa.com.br
+ALLOWED_HOSTS=*
+
+# Redes das quais X-Real-IP / X-Forwarded-For sao aceitos. Fora delas o
+# cabecalho e ignorado, senao qualquer cliente burlaria o rate limit por IP
+# apenas trocando o valor a cada requisicao.
+TRUSTED_PROXY_CIDRS=127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+# Swagger e ReDoc. Vazio = liberado fora de producao, fechado em producao.
+ENABLE_API_DOCS=

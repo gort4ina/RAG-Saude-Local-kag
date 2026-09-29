@@ -1,0 +1,21 @@
+.git
+.github
+.env
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+tests
+frontend
+data
+docs
+eval
+scripts
+# Excecao: ferramenta de manutencao usada via `docker compose exec`.
+!scripts/__init__.py
+!scripts/remove_document.py
+*.zip
+README.md
+LICENSE
+SECURITY.md
