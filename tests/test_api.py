@@ -118,6 +118,13 @@ class FakeStore:
     def tenant_ids(self) -> set[str]:
         return {"tenant-test"} if self.docs else set()
 
+    def tenant_text_bytes(self, tenant_id: str) -> int:
+        return sum(
+            len(item["text"].encode("utf-8"))
+            for items in self.docs.values()
+            for item in items
+        )
+
 
 class FakeOllama:
     embedding_model = "embeddinggemma"
@@ -696,3 +703,21 @@ def test_protected_route_rejects_missing_bearer_token(client) -> None:
     app.dependency_overrides.pop(get_current_principal, None)
     response = test_client.get("/api/documents")
     assert response.status_code == 401
+
+
+def test_chat_feedback_is_accepted(client) -> None:
+    test_client, _, _, _ = client
+    from sqlalchemy import create_engine
+
+    from app.config import get_settings
+    from app.database import Base
+    from app import models as _models  # noqa: F401 — registra ChatFeedback no metadata
+
+    sync_url = get_settings().database_url.replace("sqlite+aiosqlite", "sqlite")
+    Base.metadata.create_all(create_engine(sync_url))
+    response = test_client.post(
+        "/api/chat/feedback",
+        json={"request_id": "req-test-123456", "useful": True, "comment": "ok"},
+    )
+    assert response.status_code == 200
+    assert response.json()["recorded"] is True

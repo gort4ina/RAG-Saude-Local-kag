@@ -88,11 +88,14 @@ def fuse(
     *,
     question: str,
     rrf_k: int = 60,
+    graph_hits: list[dict[str, Any]] | None = None,
 ) -> list[Candidate]:
-    """Combina as duas listas por Reciprocal Rank Fusion.
+    """Combina vetor, BM25 e (opcionalmente) chunks puxados pelo grafo.
 
     ``lexical_documents`` traz texto e metadados dos chunks que apareceram
-    apenas no BM25 (o ChromaDB nao os devolveu).
+    apenas no BM25 (o ChromaDB nao os devolveu). ``graph_hits`` tem o
+    mesmo formato dos resultados vetoriais e entra como terceira lista
+    do RRF — o KAG deixa de ser so "orientacao" no prompt.
     """
     candidates: dict[str, Candidate] = {}
 
@@ -128,6 +131,20 @@ def fuse(
             bm25_score=hit.score,
             bm25_rank=rank,
             lexical_score=normalized,
+            rrf_score=1.0 / (rrf_k + rank),
+        )
+
+    for rank, item in enumerate(graph_hits or [], start=1):
+        chunk_id = str(item.get("id") or f"graph:{rank}")
+        existing = candidates.get(chunk_id)
+        if existing is not None:
+            existing.rrf_score += 1.0 / (rrf_k + rank)
+            continue
+        candidates[chunk_id] = Candidate(
+            chunk_id=chunk_id,
+            text=str(item.get("text", "")),
+            metadata=dict(item.get("metadata") or {}),
+            vector_score=float(item.get("score", 0.0)),
             rrf_score=1.0 / (rrf_k + rank),
         )
 

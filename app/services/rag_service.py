@@ -73,6 +73,10 @@ class RagOptions:
     dedup_similarity: float = 0.90
     min_chars_per_page: int = 40
     min_extraction_ratio: float = 0.20
+    graph_in_rrf: bool = True
+    reranker_enabled: bool = False
+    reranker_candidates: int = 20
+    query_router_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -106,8 +110,16 @@ class RagService:
         bm25: Bm25Index | None = None,
         upload_path: Path | None = None,
         knowledge_graph: GraphStore | None = None,
+        embeddings: Any = None,
+        reranker: Any = None,
+        ocr: Any = None,
     ) -> None:
+        from app.services.embeddings import OllamaEmbeddingProvider
+
         self.ollama = ollama
+        self.embeddings = embeddings or OllamaEmbeddingProvider(ollama)
+        self.reranker = reranker
+        self.ocr = ocr
         self.store = store
         self.options = options
         self.bm25 = bm25 if bm25 is not None else Bm25Index()
@@ -195,6 +207,7 @@ class RagService:
             path,
             min_chars_per_page=self.options.min_chars_per_page,
             min_extraction_ratio=self.options.min_extraction_ratio,
+            ocr=self.ocr,
         )
 
         confirmed: dict[str, Any] = {}
@@ -202,6 +215,11 @@ class RagService:
             confirmed = await asyncio.to_thread(
                 load_sidecar, sidecar_path(self.upload_path, original_filename)
             )
+        if extraction.frontmatter:
+            # Sidecar humano ganha do front-matter quando os dois existem.
+            merged = dict(extraction.frontmatter)
+            merged.update(confirmed)
+            confirmed = merged
 
         head = "\n".join(page.text for page in extraction.pages[:3])
         metadata = extract_metadata(
@@ -228,7 +246,7 @@ class RagService:
         batch = self.options.embed_batch_size
         embed_started = time.perf_counter()
         for start in range(0, len(texts), batch):
-            embeddings.extend(await self.ollama.embed(texts[start : start + batch]))
+            embeddings.extend(await self.embeddings.embed(texts[start : start + batch]))
         embed_ms = int((time.perf_counter() - embed_started) * 1000)
 
         previous_ids = await asyncio.to_thread(
@@ -366,10 +384,19 @@ class RagService:
             return outcome
 
         embed_started = time.perf_counter()
-        embeddings = await self.ollama.embed([question])
+        embeddings = await self.embeddings.embed([question])
         embed_elapsed = time.perf_counter() - embed_started
         outcome.embed_ms = int(embed_elapsed * 1000)
         prom_metrics.observe_stage("embed", embed_elapsed)
+
+        from app.services.query_router import route_query
+        from app.services.tracing import span
+
+        plan = (
+            route_query(question, kag_enabled=self.knowledge_graph is not None)
+            if self.options.query_router_enabled
+            else None
+        )
 
         # Vector + BM25 + KAG são independentes: rodam em paralelo. O event
         # loop libera a thread do embedder e o Postgres do KAG enquanto o
@@ -377,7 +404,11 @@ class RagService:
         # ramo mais lento — e não a soma dos três.
         tenant_bm25 = self._bm25(tenant_id)
         run_bm25 = self.options.hybrid_search_enabled and tenant_bm25.size > 0
+        if plan is not None and not plan.use_bm25:
+            run_bm25 = False
         run_graph = self.knowledge_graph is not None
+        if plan is not None and not plan.use_graph:
+            run_graph = False
 
         query_started = time.perf_counter()
 
@@ -425,14 +456,26 @@ class RagService:
                     self.store.get_chunks, tenant_id, missing
                 )
 
+        graph_hits: list[dict[str, Any]] = []
+        if self.options.graph_in_rrf and graph_relations:
+            graph_hits = await self._chunks_from_graph(tenant_id, graph_relations)
+
         fusion_started = time.perf_counter()
-        fused = fuse(
-            vector_results,
-            bm25_hits,
-            lexical_documents,
-            question=question,
-            rrf_k=self.options.rrf_k,
-        )
+        with span("fuse", fused_hint=len(vector_results)):
+            fused = fuse(
+                vector_results,
+                bm25_hits,
+                lexical_documents,
+                question=question,
+                rrf_k=self.options.rrf_k,
+                graph_hits=graph_hits,
+            )
+        if self.options.reranker_enabled and self.reranker is not None:
+            fused = await self.reranker.rerank(
+                question,
+                fused[: self.options.reranker_candidates],
+                limit=self.options.reranker_candidates,
+            )
         outcome.selected = select_context(
             fused,
             min_relevance_score=self.options.min_relevance_score,
@@ -479,6 +522,47 @@ class RagService:
                 )
             )
         return outcome
+
+    async def _chunks_from_graph(
+        self, tenant_id: str, relations: list[KagRelation]
+    ) -> list[dict[str, Any]]:
+        """Converte arestas KAG em chunks candidatos para o RRF."""
+        hits: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        limit = self.options.retrieval_candidates
+        for relation in relations:
+            document_id = relation.source_document_id
+            if not document_id:
+                continue
+            ids = await asyncio.to_thread(
+                self.store.chunk_ids_for_document, tenant_id, document_id
+            )
+            if not ids:
+                continue
+            found = await asyncio.to_thread(self.store.get_chunks, tenant_id, ids)
+            ranked: list[tuple[int, str, dict[str, Any]]] = []
+            span = relation.source_span or ""
+            for chunk_id, data in found.items():
+                if chunk_id in seen:
+                    continue
+                metadata = data.get("metadata") or {}
+                article = str(metadata.get("article") or "")
+                score = 2 if span and (span in article or article in span) else 1
+                ranked.append((score, chunk_id, data))
+            ranked.sort(key=lambda item: item[0], reverse=True)
+            for _, chunk_id, data in ranked[:2]:
+                seen.add(chunk_id)
+                hits.append(
+                    {
+                        "id": chunk_id,
+                        "text": data.get("text", ""),
+                        "metadata": data.get("metadata") or {},
+                        "score": 0.5,
+                    }
+                )
+                if len(hits) >= limit:
+                    return hits
+        return hits
 
     def _audit(self, answer_text: str, outcome: RetrievalOutcome) -> CitationAudit:
         return audit_answer(
@@ -669,6 +753,7 @@ class RagService:
 
         yield {
             "type": "done",
+            "request_id": request_id,
             "duration_ms": duration_ms,
             "grounded": audit.grounded,
             "requires_human_review": audit.requires_human_review,

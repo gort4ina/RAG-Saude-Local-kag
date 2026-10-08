@@ -165,6 +165,14 @@ export class ApiService {
     });
   }
 
+  sendFeedback(requestId: string, useful: boolean, comment?: string): Observable<{ recorded: boolean }> {
+    return this.http.post<{ recorded: boolean }>(`${this.baseUrl}/chat/feedback`, {
+      request_id: requestId,
+      useful,
+      comment: comment || null
+    });
+  }
+
   /** Endpoint JSON original, preservado como fallback. */
   chat(question: string): Observable<ChatResponse> {
     return this.http.post<ChatResponse>(`${this.baseUrl}/chat`, { question });

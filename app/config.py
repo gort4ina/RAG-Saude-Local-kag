@@ -272,6 +272,32 @@ class Settings:
 
     # ---------- KAG (grafo de conhecimento) ----------
     # Desligar volta o pipeline ao RAG puro (vetor + BM25), sem tocar no grafo.
+    # chroma (default) ou pgvector. pgvector exige a tabela knowledge_chunks.
+    vector_backend: str = field(
+        default_factory=lambda: os.getenv("VECTOR_BACKEND", "chroma").strip().lower()
+    )
+    embedding_dimension: int = field(
+        default_factory=lambda: _int_env("EMBEDDING_DIMENSION", "768")
+    )
+    reranker_enabled: bool = field(
+        default_factory=lambda: _bool_env("RERANKER_ENABLED", "false")
+    )
+    reranker_candidates: int = field(
+        default_factory=lambda: _int_env("RERANKER_CANDIDATES", "20")
+    )
+    graph_in_rrf: bool = field(
+        default_factory=lambda: _bool_env("GRAPH_IN_RRF", "true")
+    )
+    query_router_enabled: bool = field(
+        default_factory=lambda: _bool_env("QUERY_ROUTER_ENABLED", "true")
+    )
+    kag_llm_extractor: bool = field(
+        default_factory=lambda: _bool_env("KAG_LLM_EXTRACTOR", "false")
+    )
+    ocr_enabled: bool = field(
+        default_factory=lambda: _bool_env("OCR_ENABLED", "false")
+    )
+
     kag_enabled: bool = field(
         default_factory=lambda: _bool_env("KAG_ENABLED", "true")
     )
@@ -294,6 +320,8 @@ class Settings:
     )
 
     def __post_init__(self) -> None:
+        if self.vector_backend not in {"chroma", "pgvector"}:
+            raise ValueError("VECTOR_BACKEND deve ser 'chroma' ou 'pgvector'.")
         if self.kag_graph_backend not in {"postgres", "neptune"}:
             raise ValueError(
                 "KAG_GRAPH_BACKEND deve ser 'postgres' (local) ou 'neptune'."

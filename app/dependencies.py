@@ -64,14 +64,32 @@ def get_rag_service() -> RagService:
         num_predict=settings.ollama_num_predict,
         temperature=settings.ollama_temperature,
     )
-    store = VectorStore(
-        settings.chroma_path,
-        settings.collection_name,
-        embedding_model=settings.embedding_model,
-    )
-    # KnowledgeGraphService é o tipo concreto usado pelos type checkers;
-    # o valor pode ser qualquer GraphStore (Postgres ou Neptune stub).
+    if settings.vector_backend == "pgvector":
+        from app.services.pgvector_store import PgVectorStore
+
+        store = PgVectorStore(
+            get_session_factory(),
+            embedding_model=settings.embedding_model,
+            collection_name=settings.collection_name,
+        )
+    else:
+        store = VectorStore(
+            settings.chroma_path,
+            settings.collection_name,
+            embedding_model=settings.embedding_model,
+        )
+    from app.services.embeddings import OllamaEmbeddingProvider
+    from app.services.ocr import TesseractOcrBackend
+    from app.services.reranker import OllamaPromptReranker
+
+    embeddings = OllamaEmbeddingProvider(ollama)
+    reranker = OllamaPromptReranker(ollama) if settings.reranker_enabled else None
+    ocr = TesseractOcrBackend() if settings.ocr_enabled else None
     graph = get_knowledge_graph_service()
+    if graph is not None and settings.kag_llm_extractor:
+        from app.services.llm_extractor import LLMAssistedRelationExtractor
+
+        graph.llm_extractor = LLMAssistedRelationExtractor(ollama)  # type: ignore[attr-defined]
     return RagService(
         ollama=ollama,
         store=store,
@@ -87,8 +105,15 @@ def get_rag_service() -> RagService:
             dedup_similarity=settings.dedup_similarity,
             min_chars_per_page=settings.min_chars_per_page,
             min_extraction_ratio=settings.min_extraction_ratio,
+            graph_in_rrf=settings.graph_in_rrf,
+            reranker_enabled=settings.reranker_enabled,
+            reranker_candidates=settings.reranker_candidates,
+            query_router_enabled=settings.query_router_enabled,
         ),
         bm25=Bm25Index(),
         upload_path=settings.upload_path,
         knowledge_graph=graph,  # type: ignore[arg-type]
+        embeddings=embeddings,
+        reranker=reranker,
+        ocr=ocr,
     )

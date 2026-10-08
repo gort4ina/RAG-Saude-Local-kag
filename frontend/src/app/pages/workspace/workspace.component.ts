@@ -229,6 +229,17 @@ export class WorkspaceComponent implements OnInit, OnDestroy, AfterViewChecked {
       });
   }
 
+  sendFeedback(message: Message, useful: boolean): void {
+    if (!message.requestId || message.feedback) return;
+    this.api.sendFeedback(message.requestId, useful).subscribe({
+      next: () => (message.feedback = useful ? 'useful' : 'not_useful'),
+      error: () => {
+        this.noticeType = 'error';
+        this.notice = 'Não foi possível registrar o feedback.';
+      }
+    });
+  }
+
   cancel(): void {
     this.abortController?.abort();
   }
@@ -279,6 +290,7 @@ export class WorkspaceComponent implements OnInit, OnDestroy, AfterViewChecked {
           case 'metadata':
             message.sources = event.sources;
             message.relations = event.relations ?? [];
+            message.requestId = event.request_id;
             break;
           case 'token':
             message.content += event.content;
@@ -297,6 +309,7 @@ export class WorkspaceComponent implements OnInit, OnDestroy, AfterViewChecked {
             message.reviewReasons = event.review_reasons;
             message.durationMs = event.duration_ms;
             message.tokensPerSecond = event.tokens_per_second;
+            if (event.request_id) message.requestId = event.request_id;
             break;
           case 'error':
             message.errorCode = event.code;
@@ -342,7 +355,8 @@ export class WorkspaceComponent implements OnInit, OnDestroy, AfterViewChecked {
         requires_human_review: response.requires_human_review ?? false,
         reviewReasons: response.review_reasons,
         durationMs: response.duration_ms,
-        tokensPerSecond: response.tokens_per_second
+        tokensPerSecond: response.tokens_per_second,
+        requestId: response.request_id
       });
     } catch (error) {
       const { code, message } = humanizeError(error as HttpErrorResponse);

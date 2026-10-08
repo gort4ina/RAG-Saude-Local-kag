@@ -36,7 +36,11 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
+    from app.services.rls import apply_tenant_rls
+    from app.tenant_context import get_tenant_id
+
     async with get_session_factory()() as session:
+        await apply_tenant_rls(session, get_tenant_id())
         yield session
 
 

@@ -55,6 +55,8 @@ from app.logging_config import configure_logging, get_request_id, new_request_id
 from app.schemas import (
     AuditEventResponse,
     ChangePasswordRequest,
+    ChatFeedbackRequest,
+    ChatFeedbackResponse,
     ChatRequest,
     ChatResponse,
     ComponentStatus,
@@ -1017,10 +1019,14 @@ async def upload_document(
     # Resolve por request para permitir ajuste em tempo de teste.
     quota_bytes = get_settings().tenant_upload_quota_bytes
     if quota_bytes > 0:
-        existing_bytes = sum(
-            len((chunk_text or "").encode("utf-8"))
-            for _chunk_id, chunk_text in service.store.all_chunks(principal.tenant_id)
-        )
+        text_bytes = getattr(service.store, "tenant_text_bytes", None)
+        if callable(text_bytes):
+            existing_bytes = text_bytes(principal.tenant_id)
+        else:
+            existing_bytes = sum(
+                len((chunk_text or "").encode("utf-8"))
+                for _chunk_id, chunk_text in service.store.all_chunks(principal.tenant_id)
+            )
         if existing_bytes + len(content) > quota_bytes:
             await audit.record(
                 request_id=get_request_id(),
@@ -1339,6 +1345,37 @@ async def chat(
         ip_address=_client_ip(request),
     )
     return response
+
+
+@app.post("/api/chat/feedback", response_model=ChatFeedbackResponse)
+async def chat_feedback(
+    payload: ChatFeedbackRequest,
+    principal: Principal = require_scopes("rag:query"),
+    session: AsyncSession = Depends(get_db_session),
+    audit: AuditWriter = Depends(get_audit_writer),
+) -> ChatFeedbackResponse:
+    """Registra se a resposta foi util. Usado para calibrar thresholds."""
+    from app.models import ChatFeedback
+
+    session.add(
+        ChatFeedback(
+            request_id=payload.request_id,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            useful=payload.useful,
+            comment=payload.comment,
+        )
+    )
+    await session.commit()
+    await audit.record(
+        request_id=payload.request_id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="rag.feedback",
+        status="useful" if payload.useful else "not_useful",
+        details={"comment": payload.comment or ""},
+    )
+    return ChatFeedbackResponse(request_id=payload.request_id)
 
 
 @app.post("/api/chat/stream")

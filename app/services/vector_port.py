@@ -51,6 +51,9 @@ class VectorStorePort(Protocol):
     def list_documents(self, tenant_id: str) -> list[dict[str, Any]]:
         """Agregação por documento, para a interface administrativa."""
 
+    def tenant_text_bytes(self, tenant_id: str) -> int:
+        """Soma dos bytes de texto indexados — usada na cota de upload."""
+
     def chunk_ids_for_document(
         self, tenant_id: str, document_id: str
     ) -> list[str]:

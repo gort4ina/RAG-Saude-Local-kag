@@ -254,6 +254,15 @@
             </ul>
           </details>
 
+          <div class="feedback" *ngIf="message.role === 'assistant' && message.requestId && !message.streaming">
+            <button type="button" [disabled]="!!message.feedback"
+              [class.active]="message.feedback === 'useful'"
+              (click)="sendFeedback(message, true)">Útil</button>
+            <button type="button" [disabled]="!!message.feedback"
+              [class.active]="message.feedback === 'not_useful'"
+              (click)="sendFeedback(message, false)">Não útil</button>
+          </div>
+
           <div class="metrics" *ngIf="message.durationMs || message.tokensPerSecond">
             <span *ngIf="message.durationMs">
               <em>latência</em> {{ message.durationMs | number:'1.0-0' }} ms

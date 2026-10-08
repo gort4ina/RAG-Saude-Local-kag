@@ -1,0 +1,73 @@
+<main class="page">
+  <header class="page-head">
+    <h1>Grafo KAG</h1>
+    <p>Revise arestas extraídas. Só as validadas ou pendentes entram como orientação; a citação continua sendo a Fonte.</p>
+  </header>
+
+  <p class="notice" *ngIf="notice" [class.error]="noticeType === 'error'"
+    [class.success]="noticeType === 'success'">{{ notice }}</p>
+
+  <section class="panel">
+    <form class="inline-form" (ngSubmit)="refresh()">
+      <label>Status
+        <select [(ngModel)]="filter" name="filter" (change)="refresh()">
+          <option value="">Todos</option>
+          <option value="pendente_de_validacao">Pendentes</option>
+          <option value="validada">Validadas</option>
+          <option value="rejeitada">Rejeitadas</option>
+        </select>
+      </label>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Relações do tenant</h2>
+    <p class="empty" *ngIf="loading">Carregando...</p>
+    <table class="grid" *ngIf="!loading && relations.length">
+      <thead>
+        <tr>
+          <th>Sujeito</th>
+          <th>Relação</th>
+          <th>Objeto</th>
+          <th>Fonte</th>
+          <th>Confiança</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let rel of relations">
+          <td>
+            <strong>{{ rel.subject }}</strong>
+            <small class="query">{{ rel.subject_kind }}</small>
+          </td>
+          <td>{{ rel.relation }}</td>
+          <td>
+            <strong>{{ rel.object }}</strong>
+            <small class="query">{{ rel.object_kind }}</small>
+          </td>
+          <td>
+            {{ rel.source_span || '—' }}
+            <small class="query" *ngIf="rel.source_reference">{{ rel.source_reference }}</small>
+            <small class="query" *ngIf="rel.extracted_by">via {{ rel.extracted_by }}</small>
+          </td>
+          <td>{{ rel.confidence != null ? (rel.confidence | percent:'1.0-0') : '—' }}</td>
+          <td>
+            <span class="status-tag"
+              [class.unverified]="rel.validation_status === 'pendente_de_validacao'"
+              [class.revoked]="rel.validation_status === 'rejeitada'">
+              {{ rel.validation_status }}
+            </span>
+          </td>
+          <td class="row-actions" *ngIf="auth.hasScope('documents:validate')">
+            <button type="button" *ngIf="rel.validation_status !== 'validada'"
+              (click)="decide(rel, 'validada')">Aprovar</button>
+            <button type="button" class="revoke" *ngIf="rel.validation_status !== 'rejeitada'"
+              (click)="decide(rel, 'rejeitada')">Rejeitar</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="empty" *ngIf="!loading && !relations.length">Nenhuma relação no grafo deste tenant.</p>
+  </section>
+</main>

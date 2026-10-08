@@ -282,6 +282,9 @@ async def get_current_principal(
         scopes=scopes,
     )
     request.state.principal = principal
+    from app.tenant_context import set_tenant_id
+
+    set_tenant_id(principal.tenant_id)
     return principal
 
 
