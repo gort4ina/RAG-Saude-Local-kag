@@ -108,7 +108,11 @@ class Settings:
         default_factory=lambda: os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
     )
     bootstrap_admin_password: str = field(
-        default_factory=lambda: os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "123456")
+        # Sem default. Se nao vier do ambiente o bootstrap simplesmente
+        # nao cria admin (bootstrap_admin() ja aborta nesse caso). Isso
+        # evita o antipattern historico de materializar admin com senha
+        # trivial ('123456') quando a variavel esquece de ser definida.
+        default_factory=lambda: os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
     )
 
     # ---------- Ollama ----------
@@ -296,8 +300,35 @@ class Settings:
             )
         if "*" in self.allowed_origins and len(self.allowed_origins) > 1:
             raise ValueError("ALLOWED_ORIGINS não pode misturar '*' com origens explícitas.")
+
+        # Se a senha de bootstrap foi definida (em qualquer ambiente), ela
+        # precisa ter forca minima. O bootstrap SEM senha nao cria admin,
+        # entao string vazia continua valida (opt-out explicito).
+        if self.bootstrap_admin_password:
+            weak = {
+                "123456", "12345678", "password", "senha", "admin",
+                "troca-depois", "troque", "mudar", "change-me", "changeme",
+            }
+            if (
+                len(self.bootstrap_admin_password) < 12
+                or self.bootstrap_admin_password.lower() in weak
+            ):
+                raise ValueError(
+                    "BOOTSTRAP_ADMIN_PASSWORD precisa ter 12+ caracteres e nao pode "
+                    "estar na lista de senhas triviais (123456, admin, password, ...)."
+                )
+
         if not self.is_production:
             return
+
+        if not self.bootstrap_admin_password:
+            # Em producao recusar subir sem bootstrap evita o cenario silencioso
+            # de deploy sem admin algum: o operador precisa decidir explicitamente
+            # (seja definindo a senha, seja criando o admin fora do app).
+            raise ValueError(
+                "BOOTSTRAP_ADMIN_PASSWORD obrigatorio em producao. "
+                "Defina a senha ou provisione o admin via migracao/console."
+            )
 
         if len(self.jwt_secret) < 32 or self.jwt_secret.startswith("development-"):
             raise ValueError(

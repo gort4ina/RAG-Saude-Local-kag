@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -133,9 +134,53 @@ def _resolve_service(application: FastAPI) -> RagService:
     return factory()
 
 
+def _assert_single_worker_safe() -> None:
+    """Em producao, recusa subir se houver mais de 1 worker com estado local.
+
+    O backend tem tres componentes process-local hoje:
+    - Chroma embedded (``chroma_path``) com SQLite proprio;
+    - BM25 em memoria (``Bm25Index``);
+    - rate limit via ``memory://`` do SlowAPI;
+    - ``InferenceGate`` baseado em ``asyncio.Semaphore``.
+
+    Rodar com ``uvicorn --workers > 1`` ou ``WEB_CONCURRENCY > 1`` *vai*
+    corromper o SQLite do Chroma, fragmentar o BM25 e multiplicar o teto
+    do rate limit por N. Em dev avisamos; em producao abortamos.
+    """
+    try:
+        workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        workers = 1
+    if workers <= 1:
+        return
+
+    issues: list[str] = []
+    if settings.rate_limit_storage_uri.startswith("memory://"):
+        issues.append(
+            "RATE_LIMIT_STORAGE_URI=memory:// (defina um backend compartilhado, "
+            "ex.: redis://redis:6379/0)"
+        )
+    # Chroma embedded sempre eh process-local. Enquanto nao houver
+    # ``VECTOR_BACKEND=pgvector`` (plano em docs/PGVECTOR-PLANO.md), assumimos
+    # Chroma e qualquer workers>1 eh invalido.
+    issues.append(
+        "Chroma embedded e BM25 em memoria sao process-local: use 1 worker ate "
+        "concluir a migracao para pgvector (docs/PGVECTOR-PLANO.md)"
+    )
+
+    message = (
+        f"WEB_CONCURRENCY={workers} com componentes process-local: "
+        + " | ".join(issues)
+    )
+    if settings.is_production:
+        raise RuntimeError(message)
+    logger.warning("worker_configuration_unsafe", extra={"detail": message})
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Abre o pool HTTP do Ollama, reconstrói o BM25 e agenda a poda LGPD."""
+    _assert_single_worker_safe()
     service = _resolve_service(application)
     startup = getattr(service.ollama, "startup", None)
     if callable(startup):
