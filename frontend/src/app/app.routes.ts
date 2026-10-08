@@ -45,6 +45,14 @@ export const APP_ROUTES: Routes = [
           import('./pages/audit/audit.component').then(module => module.AuditComponent)
       },
       {
+        path: 'kag',
+        canActivate: [scopeGuard('documents:read')],
+        loadComponent: () =>
+          import('./pages/admin/admin-kag.component').then(
+            module => module.AdminKagComponent
+          )
+      },
+      {
         path: 'sem-permissao',
         loadComponent: () =>
           import('./pages/forbidden/forbidden.component').then(

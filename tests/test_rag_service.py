@@ -84,9 +84,6 @@ class FakeStore:
     def query(self, tenant_id: str, embedding: list[float], limit: int) -> list[dict]:
         return self.results[:limit]
 
-    def get_chunks(self, tenant_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
-        return {}
-
     def all_chunks(self, tenant_id: str) -> list[tuple[str, str]]:
         return [
             (str(item.get("id", index)), str(item.get("text", "")))
@@ -95,6 +92,17 @@ class FakeStore:
 
     def list_documents(self, tenant_id: str) -> list[dict]:
         return []
+
+    def tenant_text_bytes(self, tenant_id: str) -> int:
+        return sum(len(str(item.get("text", "")).encode("utf-8")) for item in self.results)
+
+    def get_chunks(self, tenant_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
+        found: dict[str, dict[str, Any]] = {}
+        for item in self.results:
+            chunk_id = str(item.get("id", ""))
+            if chunk_id in ids:
+                found[chunk_id] = item
+        return found
 
     def chunk_ids_for_document(self, tenant_id: str, document_id: str) -> list[str]:
         return list(self.existing_ids)

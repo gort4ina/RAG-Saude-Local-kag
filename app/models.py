@@ -161,12 +161,76 @@ class KnowledgeEntity(Base):
     """Nó do grafo regulatório, sempre isolado por tenant."""
 
     __tablename__ = "knowledge_entities"
-    __table_args__ = (UniqueConstraint("tenant_id", "kind", "name", name="uq_knowledge_entity"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "kind", "name_normalized", name="uq_knowledge_entity_normalized"
+        ),
+        Index("ix_knowledge_entity_normalized", "tenant_id", "name_normalized"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name_normalized: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    aliases: Mapped[list["KnowledgeEntityAlias"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+
+
+class KnowledgeEntityAlias(Base):
+    """Grafia alternativa de um no (ANVISA ≡ Agencia Nacional...)."""
+
+    __tablename__ = "knowledge_entity_aliases"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "alias_normalized", name="uq_knowledge_entity_alias"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    alias_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    entity: Mapped[KnowledgeEntity] = relationship(back_populates="aliases")
+
+
+class ChatFeedback(Base):
+    """Sinal humano sobre uma resposta (util / nao util)."""
+
+    __tablename__ = "chat_feedback"
+    __table_args__ = (Index("ix_feedback_tenant_created", "tenant_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    useful: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class KnowledgeChunk(Base):
+    """Trecho vetorizado quando ``VECTOR_BACKEND=pgvector``."""
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        Index("ix_chunks_tenant_doc", "tenant_id", "document_id"),
+        Index("ix_chunks_tenant_model", "tenant_id", "embedding_model"),
+    )
+
+    id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    document_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 

@@ -37,6 +37,8 @@ class VectorStore:
         self.path = path
         self.collection_name = collection_name
         self.embedding_model = embedding_model
+        self._doc_cache: dict[str, list[dict[str, Any]]] = {}
+        self._bytes_cache: dict[str, int] = {}
         try:
             self._client = chromadb.PersistentClient(path=str(path))
             self.collection = self._open_collection()
@@ -69,6 +71,17 @@ class VectorStore:
 
         self._assert_embedding_model(collection)
         return collection
+
+    def _invalidate(self, tenant_id: str) -> None:
+        self._doc_cache.pop(tenant_id, None)
+        self._bytes_cache.pop(tenant_id, None)
+
+    def tenant_text_bytes(self, tenant_id: str) -> int:
+        if tenant_id in self._bytes_cache:
+            return self._bytes_cache[tenant_id]
+        total = sum(len((text or "").encode("utf-8")) for _id, text in self.all_chunks(tenant_id))
+        self._bytes_cache[tenant_id] = total
+        return total
 
     def _assert_embedding_model(self, collection: Any) -> None:
         if not self.embedding_model:
@@ -234,6 +247,9 @@ class VectorStore:
 
     def list_documents(self, tenant_id: str) -> list[dict[str, Any]]:
         """Agrupa trechos por documento para exibicao na interface."""
+        cached = self._doc_cache.get(tenant_id)
+        if cached is not None:
+            return cached
         try:
             result = self.collection.get(
                 where={"tenant_id": tenant_id}, include=["metadatas"]
@@ -263,7 +279,7 @@ class VectorStore:
                 },
             )
 
-        return [
+        result = [
             {
                 "document_id": key[0],
                 "filename": key[1],
@@ -272,6 +288,8 @@ class VectorStore:
             }
             for key, count in sorted(grouped.items(), key=lambda item: item[0][1].lower())
         ]
+        self._doc_cache[tenant_id] = result
+        return result
 
     def document_ids(self, tenant_id: str) -> set[str]:
         """Ids de documento presentes na colecao."""
@@ -324,6 +342,7 @@ class VectorStore:
             raise VectorStoreUnavailableError(
                 "Falha ao persistir trechos no ChromaDB."
             ) from exc
+        self._invalidate(tenant_id)
 
     def delete_ids(self, tenant_id: str, ids: list[str]) -> None:
         """Remove trechos especificos por id."""
@@ -336,6 +355,7 @@ class VectorStore:
             raise VectorStoreUnavailableError(
                 "Falha ao remover trechos do ChromaDB."
             ) from exc
+        self._invalidate(tenant_id)
 
     def delete_document(self, tenant_id: str, document_id: str) -> None:
         """Remove todos os trechos de um documento."""
@@ -355,6 +375,7 @@ class VectorStore:
             raise VectorStoreUnavailableError(
                 "Falha ao remover documento antigo do ChromaDB."
             ) from exc
+        self._invalidate(tenant_id)
 
     def update_document_status(
         self,
@@ -411,6 +432,7 @@ class VectorStore:
                 embeddings=result.get("embeddings"),
                 metadatas=metadatas,
             )
+            self._invalidate(tenant_id)
             return len(ids)
         except Exception as exc:  # pragma: no cover - depende do ChromaDB
             logger.exception(

@@ -23,13 +23,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Protocol
+from typing import Any, Iterable, Protocol
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import KnowledgeEntity, KnowledgeRelation
+from app.models import KnowledgeEntity, KnowledgeEntityAlias, KnowledgeRelation
+from app.services.entity_aliases import aliases_for
 from app.services.metadata import RegulatoryMetadata, STATUS_IN_FORCE, STATUS_REVOKED
+from app.services.normalize import normalize_entity_name
+from app.services.rls import apply_tenant_rls
 from app.services.text_splitter import StructuredChunk, split_structured
 
 
@@ -271,26 +274,53 @@ class KnowledgeGraphService:
         sessions: async_sessionmaker[AsyncSession],
         *,
         extractor: RelationExtractor | None = None,
+        llm_extractor: Any = None,
     ) -> None:
         self.sessions = sessions
         self.extractor: RelationExtractor = (
             extractor if extractor is not None else DictionaryRelationExtractor()
         )
+        self.llm_extractor = llm_extractor
 
     async def _entity(
         self, session: AsyncSession, tenant_id: str, kind: str, name: str
     ) -> KnowledgeEntity:
+        normalized = normalize_entity_name(name)
         item = await session.scalar(
             select(KnowledgeEntity).where(
                 KnowledgeEntity.tenant_id == tenant_id,
                 KnowledgeEntity.kind == kind,
-                KnowledgeEntity.name == name,
+                KnowledgeEntity.name_normalized == normalized,
             )
         )
         if item is None:
-            item = KnowledgeEntity(tenant_id=tenant_id, kind=kind, name=name)
+            item = KnowledgeEntity(
+                tenant_id=tenant_id,
+                kind=kind,
+                name=name,
+                name_normalized=normalized,
+            )
             session.add(item)
             await session.flush()
+            for alias in aliases_for(name):
+                alias_norm = normalize_entity_name(alias)
+                if alias_norm == normalized:
+                    continue
+                exists = await session.scalar(
+                    select(KnowledgeEntityAlias).where(
+                        KnowledgeEntityAlias.tenant_id == tenant_id,
+                        KnowledgeEntityAlias.alias_normalized == alias_norm,
+                    )
+                )
+                if exists is None:
+                    session.add(
+                        KnowledgeEntityAlias(
+                            tenant_id=tenant_id,
+                            entity_id=item.id,
+                            alias=alias,
+                            alias_normalized=alias_norm,
+                        )
+                    )
         return item
 
     async def sync_document(
@@ -316,7 +346,17 @@ class KnowledgeGraphService:
 
         persisted = 0
         seen: set[tuple[str, str, str, str, str]] = set()
+        extracted_list = list(
+            self.extractor.extract(metadata=metadata, chunks=structural_chunks)
+        )
+        if self.llm_extractor is not None and hasattr(self.llm_extractor, "extract_async"):
+            extra = await self.llm_extractor.extract_async(
+                metadata=metadata, chunks=structural_chunks
+            )
+            extracted_list.extend(extra)
+
         async with self.sessions() as session:
+            await apply_tenant_rls(session, tenant_id)
             await session.execute(
                 KnowledgeRelation.__table__.delete().where(
                     KnowledgeRelation.tenant_id == tenant_id,
@@ -327,9 +367,7 @@ class KnowledgeGraphService:
                 session, tenant_id, "norma", document_name
             )
 
-            for extracted in self.extractor.extract(
-                metadata=metadata, chunks=structural_chunks
-            ):
+            for extracted in extracted_list:
                 source_kind = extracted.source_kind or "norma"
                 source_name = extracted.source_name or document_name
                 key = (
@@ -382,6 +420,7 @@ class KnowledgeGraphService:
         órfãs.
         """
         async with self.sessions() as session:
+            await apply_tenant_rls(session, tenant_id)
             result = await session.execute(
                 KnowledgeRelation.__table__.delete().where(
                     KnowledgeRelation.tenant_id == tenant_id,
@@ -394,12 +433,18 @@ class KnowledgeGraphService:
     async def search_context(
         self, tenant_id: str, question: str, limit: int = 8
     ) -> list[KagRelation]:
-        terms = [term for term in question.casefold().split() if len(term) >= 4]
+        terms = [
+            normalize_entity_name(term)
+            for term in question.split()
+            if len(normalize_entity_name(term)) >= 3
+        ]
         if not terms:
             return []
         async with self.sessions() as session:
+            await apply_tenant_rls(session, tenant_id)
             entity = KnowledgeEntity
             target = KnowledgeEntity.__table__.alias("target_entity")
+            alias = KnowledgeEntityAlias
             query = (
                 select(
                     KnowledgeRelation,
@@ -416,9 +461,25 @@ class KnowledgeGraphService:
                 )
             )
             conditions = [
-                entity.name.ilike(f"%{term}%") | target.c.name.ilike(f"%{term}%")
+                entity.name_normalized.ilike(f"%{term}%")
+                | target.c.name_normalized.ilike(f"%{term}%")
+                | entity.name.ilike(f"%{term}%")
+                | target.c.name.ilike(f"%{term}%")
                 for term in terms
             ]
+            alias_hits = (
+                await session.scalars(
+                    select(alias.entity_id).where(
+                        alias.tenant_id == tenant_id,
+                        or_(*[alias.alias_normalized.ilike(f"%{term}%") for term in terms]),
+                    )
+                )
+            ).all()
+            if alias_hits:
+                conditions.append(
+                    KnowledgeRelation.source_entity_id.in_(alias_hits)
+                    | KnowledgeRelation.target_entity_id.in_(alias_hits)
+                )
             rows = (
                 await session.execute(query.where(or_(*conditions)).limit(limit))
             ).all()
@@ -433,6 +494,7 @@ class KnowledgeGraphService:
     ) -> list[KagRelation]:
         """Enumera relações para revisão humana no painel administrativo."""
         async with self.sessions() as session:
+            await apply_tenant_rls(session, tenant_id)
             entity = KnowledgeEntity
             target = KnowledgeEntity.__table__.alias("target_entity")
             query = (
@@ -471,6 +533,7 @@ class KnowledgeGraphService:
         histórico de revisão).
         """
         async with self.sessions() as session:
+            await apply_tenant_rls(session, tenant_id)
             relation = await session.scalar(
                 select(KnowledgeRelation).where(
                     KnowledgeRelation.tenant_id == tenant_id,

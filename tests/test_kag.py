@@ -151,3 +151,44 @@ async def test_custom_extractor_is_plugged_via_constructor(tmp_path: Path) -> No
         assert llm_relations[0].confidence == pytest.approx(0.65)
     finally:
         await teardown()
+
+
+@pytest.mark.asyncio
+async def test_search_context_matches_accented_and_aliased_terms(
+    tmp_path: Path,
+) -> None:
+    kag, setup, teardown = _make_kag(tmp_path)
+    await setup()
+    metadata = RegulatoryMetadata(
+        document_id="doc-1",
+        filename="rdc.md",
+        content_hash="h",
+        authority="ANVISA",
+        regulation_number="RDC 67/2007",
+        status=STATUS_IN_FORCE,
+    )
+    try:
+        await kag.sync_document(
+            "tenant-x", metadata, "Art. 1º Estabelece boas praticas de manipulacao."
+        )
+        hits = await kag.search_context(
+            "tenant-x", "o que a Vigilância Sanitária e a ANVISA regulam?"
+        )
+        assert hits
+        await kag.sync_document(
+            "tenant-x",
+            RegulatoryMetadata(
+                document_id="doc-2",
+                filename="outro.md",
+                content_hash="h2",
+                authority="Anvisa",
+                status=STATUS_IN_FORCE,
+            ),
+            "Art. 2 texto.",
+        )
+        relations = await kag.list_relations("tenant-x")
+        fontes = [r for r in relations if r.object_kind in {"fonte", "orgao"}]
+        names = {r.object.casefold() for r in fontes}
+        assert "anvisa" in names
+    finally:
+        await teardown()

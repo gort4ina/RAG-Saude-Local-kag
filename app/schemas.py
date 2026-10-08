@@ -81,6 +81,19 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2_000)
 
 
+class ChatFeedbackRequest(BaseModel):
+    """Sinal humano sobre uma resposta ja gerada."""
+
+    request_id: str = Field(min_length=8, max_length=64)
+    useful: bool
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class ChatFeedbackResponse(BaseModel):
+    recorded: bool = True
+    request_id: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"

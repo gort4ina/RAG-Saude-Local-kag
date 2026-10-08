@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from app.services.frontmatter import parse_frontmatter
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -47,6 +49,7 @@ class ExtractionResult:
     pages: list[DocumentPage]
     total_pages: int
     chars_per_page: dict[int, int]
+    frontmatter: dict[str, Any] = field(default_factory=dict)
 
     @property
     def pages_with_text(self) -> int:
@@ -120,9 +123,51 @@ def _read_pdf(path: Path, min_chars_per_page: int) -> ExtractionResult:
         if len(text) >= min_chars_per_page:
             pages.append(DocumentPage(number=index, text=text))
 
+    tables = _extract_pdf_tables(path)
+    if tables:
+        by_page = {page.number: page for page in pages}
+        for number, table_text in tables.items():
+            current = by_page.get(number)
+            if current is None:
+                if len(table_text) >= min_chars_per_page:
+                    pages.append(DocumentPage(number=number, text=table_text))
+            else:
+                merged = f"{current.text}\n\n{table_text}".strip()
+                by_page[number] = DocumentPage(number=number, text=merged)
+            chars_per_page[number] = chars_per_page.get(number, 0) + len(table_text)
+        pages = [by_page[key] for key in sorted(by_page)]
+
     return ExtractionResult(
         pages=pages, total_pages=len(raw_pages), chars_per_page=chars_per_page
     )
+
+
+def _extract_pdf_tables(path: Path) -> dict[int, str]:
+    """Extrai tabelas se ``pdfplumber`` estiver instalado. Caso contrario, vazio."""
+    try:
+        import pdfplumber  # type: ignore[import-not-found]
+    except ImportError:
+        return {}
+    extracted: dict[int, str] = {}
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            for index, page in enumerate(pdf.pages, start=1):
+                tables = page.extract_tables() or []
+                blocks = []
+                for table in tables:
+                    rows = [
+                        " | ".join(str(cell or "").strip() for cell in row)
+                        for row in table
+                        if row
+                    ]
+                    if rows:
+                        blocks.append("\n".join(rows))
+                if blocks:
+                    extracted[index] = "\n".join(blocks)
+    except Exception:
+        logger.warning("pdf_table_extract_failed")
+        return {}
+    return extracted
 
 
 def _read_plain_text(path: Path, min_chars_per_page: int) -> ExtractionResult:
@@ -136,8 +181,15 @@ def _read_plain_text(path: Path, min_chars_per_page: int) -> ExtractionResult:
     else:  # pragma: no cover - latin-1 nunca falha
         text = raw.decode("utf-8", errors="replace").strip()
 
-    pages = [DocumentPage(number=1, text=text)] if len(text) >= min_chars_per_page else []
-    return ExtractionResult(pages=pages, total_pages=1, chars_per_page={1: len(text)})
+    frontmatter, body = parse_frontmatter(text)
+    usable = body if frontmatter else text
+    pages = [DocumentPage(number=1, text=usable)] if len(usable) >= min_chars_per_page else []
+    return ExtractionResult(
+        pages=pages,
+        total_pages=1,
+        chars_per_page={1: len(usable)},
+        frontmatter=frontmatter,
+    )
 
 
 def extract_document(

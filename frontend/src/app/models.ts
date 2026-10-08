@@ -213,6 +213,7 @@ export type StreamEvent =
   | { type: 'token'; content: string }
   | {
       type: 'done';
+      request_id?: string;
       duration_ms: number;
       grounded: boolean;
       requires_human_review: boolean;
@@ -240,4 +241,6 @@ export interface Message {
   cancelled?: boolean;
   durationMs?: number;
   tokensPerSecond?: number;
+  requestId?: string;
+  feedback?: 'useful' | 'not_useful';
 }

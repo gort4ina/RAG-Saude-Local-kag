@@ -13,6 +13,8 @@
       *ngIf="auth.hasScope('admin:manage')">Usuários</a>
     <a routerLink="/auditoria" routerLinkActive="active"
       *ngIf="auth.hasScope('audit:read')">Auditoria</a>
+    <a routerLink="/kag" routerLinkActive="active"
+      *ngIf="auth.hasScope('documents:read')">KAG</a>
   </nav>
 
   <div class="status-group">
