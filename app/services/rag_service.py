@@ -462,10 +462,10 @@ class RagService:
     async def _chunks_from_graph(
         self, tenant_id: str, relations: list[KagRelation]
     ) -> list[dict[str, Any]]:
-        \"\"\"Converte arestas KAG em chunks candidatos para o RRF.
+        """Converte arestas KAG em chunks candidatos para o RRF.
 
         Otimizado para reduzir round-trips ao store através de busca em lote.
-        \"\"\"
+        """
         if not relations:
             return []
 
@@ -857,18 +857,4 @@ class RagService:
                 tenant_id, document_id
             )
 
-        await asyncio.to_thread(
-            self.store.delete_document, tenant_id, document_id
-        )
-        await self._refresh_bm25(tenant_id)
-
-        logger.info(
-            "document_deleted",
-            extra={
-                "document_id": document_id,
-                "tenant_id": tenant_id,
-                "chunks_removed": len(existing),
-                "kag_relations_removed": removed_relations,
-            },
-        )
-        return True
+        await asyncio.to_//Sincronizando o arquivo completo para evitar erros de patch.

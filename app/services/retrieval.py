@@ -90,7 +90,7 @@ def fuse(
     rrf_k: int = 60,
     graph_hits: list[dict[str, Any]] | None = None,
 ) -> list[Candidate]:
-    \"\"\"Combina vetor, BM25 e (opcionalmente) chunks puxados pelo grafo.\"\"\"
+    """Combina vetor, BM25 e (opcionalmente) chunks puxados pelo grafo."""
     candidates: dict[str, Candidate] = {}
 
     sources = [
@@ -138,7 +138,7 @@ def fuse(
 
 
 def passes_relevance(candidate: Candidate, min_relevance_score: float) -> bool:
-    \"\"\"Aplica o threshold denso com escape para referencia normativa literal.\"\"\"
+    """Aplica o threshold denso com escape para referencia normativa literal."""
     if candidate.vector_score >= min_relevance_score:
         return True
     return candidate.exact_reference and candidate.lexical_score >= _LEXICAL_OVERRIDE_MIN
@@ -147,7 +147,7 @@ def passes_relevance(candidate: Candidate, min_relevance_score: float) -> bool:
 def deduplicate(
     candidates: list[Candidate], *, similarity_threshold: float = 0.90
 ) -> list[Candidate]:
-    \"\"\"Remove quase-duplicatas e reduz chunks adjacentes repetidos.\"\"\"
+    """Remove quase-duplicatas e reduz chunks adjacentes repetidos."""
     selected: list[Candidate] = []
     for candidate in candidates:
         duplicate = False
@@ -176,7 +176,7 @@ def select_context(
     max_context_chunks: int,
     dedup_similarity: float = 0.90,
 ) -> list[Candidate]:
-    \"\"\"Filtra por relevancia, deduplica e corta no limite do prompt.\"\"\"
+    """Filtra por relevancia, deduplica e corta no limite do prompt."""
     relevant = [
         candidate
         for candidate in candidates
