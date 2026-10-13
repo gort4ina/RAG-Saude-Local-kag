@@ -90,76 +90,55 @@ def fuse(
     rrf_k: int = 60,
     graph_hits: list[dict[str, Any]] | None = None,
 ) -> list[Candidate]:
-    """Combina vetor, BM25 e (opcionalmente) chunks puxados pelo grafo.
-
-    ``lexical_documents`` traz texto e metadados dos chunks que apareceram
-    apenas no BM25 (o ChromaDB nao os devolveu). ``graph_hits`` tem o
-    mesmo formato dos resultados vetoriais e entra como terceira lista
-    do RRF — o KAG deixa de ser so "orientacao" no prompt.
-    """
+    \"\"\"Combina vetor, BM25 e (opcionalmente) chunks puxados pelo grafo.\"\"\"
     candidates: dict[str, Candidate] = {}
 
-    for rank, item in enumerate(vector_results, start=1):
-        chunk_id = str(item.get("id") or f"vector:{rank}")
-        candidates[chunk_id] = Candidate(
-            chunk_id=chunk_id,
-            text=str(item.get("text", "")),
-            metadata=dict(item.get("metadata") or {}),
-            vector_score=float(item.get("score", 0.0)),
-            vector_rank=rank,
-            rrf_score=1.0 / (rrf_k + rank),
-        )
+    sources = [
+        (vector_results, "vector"),
+        (bm25_hits, "bm25"),
+        (graph_hits or [], "graph"),
+    ]
 
-    max_bm25 = max((hit.score for hit in bm25_hits), default=0.0)
-    for rank, hit in enumerate(bm25_hits, start=1):
-        normalized = (hit.score / max_bm25) if max_bm25 > 0 else 0.0
-        existing = candidates.get(hit.chunk_id)
-        if existing is not None:
-            existing.bm25_score = hit.score
-            existing.bm25_rank = rank
-            existing.lexical_score = normalized
-            existing.rrf_score += 1.0 / (rrf_k + rank)
-            continue
+    for results, source_type in sources:
+        for rank, item in enumerate(results, start=1):
+            chunk_id = str(item.get("id") if source_type != "bm25" else item.chunk_id)
 
-        source = lexical_documents.get(hit.chunk_id)
-        if source is None:
-            continue
-        candidates[hit.chunk_id] = Candidate(
-            chunk_id=hit.chunk_id,
-            text=str(source.get("text", "")),
-            metadata=dict(source.get("metadata") or {}),
-            bm25_score=hit.score,
-            bm25_rank=rank,
-            lexical_score=normalized,
-            rrf_score=1.0 / (rrf_k + rank),
-        )
+            if source_type == "bm25":
+                max_bm25 = max((hit.score for hit in bm25_hits), default=0.0)
+                normalized = (item.score / max_bm25) if max_bm25 > 0 else 0.0
+                source_data = lexical_documents.get(chunk_id)
+                if not source_data: continue
+                text, metadata = source_data.get("text", ""), source_data.get("metadata") or {}
+                v_score, b_score, l_score = 0.0, item.score, normalized
+            elif source_type == "vector":
+                text, metadata = str(item.get("text", "")), dict(item.get("metadata") or {})
+                v_score, b_score, l_score = float(item.get("score", 0.0)), 0.0, 0.0
+            else: # graph
+                text, metadata = str(item.get("text", "")), dict(item.get("metadata") or {})
+                v_score, b_score, l_score = float(item.get("score", 0.0)), 0.0, 0.0
 
-    for rank, item in enumerate(graph_hits or [], start=1):
-        chunk_id = str(item.get("id") or f"graph:{rank}")
-        existing = candidates.get(chunk_id)
-        if existing is not None:
-            existing.rrf_score += 1.0 / (rrf_k + rank)
-            continue
-        candidates[chunk_id] = Candidate(
-            chunk_id=chunk_id,
-            text=str(item.get("text", "")),
-            metadata=dict(item.get("metadata") or {}),
-            vector_score=float(item.get("score", 0.0)),
-            rrf_score=1.0 / (rrf_k + rank),
-        )
+            if chunk_id in candidates:
+                c = candidates[chunk_id]
+                c.bm25_score = max(c.bm25_score, b_score)
+                c.lexical_score = max(c.lexical_score, l_score)
+                c.rrf_score += 1.0 / (rrf_k + rank)
+            else:
+                candidates[chunk_id] = Candidate(
+                    chunk_id=chunk_id, text=text, metadata=metadata,
+                    vector_score=v_score, bm25_score=b_score, lexical_score=l_score,
+                    rrf_score=1.0 / (rrf_k + rank),
+                )
 
     question_references = reference_tokens(question)
     for candidate in candidates.values():
         candidate.tokens = frozenset(tokenize(candidate.text))
-        candidate.exact_reference = bool(
-            question_references and question_references & candidate.tokens
-        )
+        candidate.exact_reference = bool(question_references and question_references & candidate.tokens)
 
     return sorted(candidates.values(), key=lambda item: item.rrf_score, reverse=True)
 
 
 def passes_relevance(candidate: Candidate, min_relevance_score: float) -> bool:
-    """Aplica o threshold denso com escape para referencia normativa literal."""
+    \"\"\"Aplica o threshold denso com escape para referencia normativa literal.\"\"\"
     if candidate.vector_score >= min_relevance_score:
         return True
     return candidate.exact_reference and candidate.lexical_score >= _LEXICAL_OVERRIDE_MIN
@@ -168,7 +147,7 @@ def passes_relevance(candidate: Candidate, min_relevance_score: float) -> bool:
 def deduplicate(
     candidates: list[Candidate], *, similarity_threshold: float = 0.90
 ) -> list[Candidate]:
-    """Remove quase-duplicatas e reduz chunks adjacentes repetidos."""
+    \"\"\"Remove quase-duplicatas e reduz chunks adjacentes repetidos.\"\"\"
     selected: list[Candidate] = []
     for candidate in candidates:
         duplicate = False
@@ -197,7 +176,7 @@ def select_context(
     max_context_chunks: int,
     dedup_similarity: float = 0.90,
 ) -> list[Candidate]:
-    """Filtra por relevancia, deduplica e corta no limite do prompt."""
+    \"\"\"Filtra por relevancia, deduplica e corta no limite do prompt.\"\"\"
     relevant = [
         candidate
         for candidate in candidates

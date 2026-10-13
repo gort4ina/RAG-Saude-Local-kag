@@ -26,8 +26,8 @@ load_dotenv()
 CHARS_PER_TOKEN_ESTIMATE = 3.8
 
 
-def _csv_env(name: str, default: str) -> list[str]:
-    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+def _env_get(name: str, default: str) -> str:
+    return os.getenv(name, default)
 
 
 def _int_env(name: str, default: str) -> int:
@@ -234,8 +234,8 @@ class Settings:
         default_factory=lambda: _int_env("MAX_JSON_BODY_KB", "256")
     )
     # Vazio = segue o ambiente: documentação aberta fora de produção.
-    enable_api_docs_raw: str = field(
-        default_factory=lambda: os.getenv("ENABLE_API_DOCS", "")
+    api_docs_enabled: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_API_DOCS", "true") if os.getenv("APP_ENV", "development") != "production" else _bool_env("ENABLE_API_DOCS", "false")
     )
     session_idle_minutes: int = field(
         default_factory=lambda: _int_env("SESSION_IDLE_MINUTES", "20")
@@ -397,38 +397,9 @@ class Settings:
         return self.app_env.strip().lower() in {"production", "prod"}
 
     @property
-    def api_docs_enabled(self) -> bool:
-        """Swagger/ReDoc ficam fechados em produção salvo opt-in explícito."""
-        raw = self.enable_api_docs_raw.strip().lower()
-        if raw:
-            return raw in {"1", "true", "yes", "on"}
-        return not self.is_production
-
-    @property
     def cors_allow_credentials(self) -> bool:
         """Cookies só podem cruzar origens quando elas são explícitas."""
         return "*" not in self.allowed_origins
-
-    @property
-    def refresh_token_seconds(self) -> int:
-        return self.refresh_token_days * 24 * 60 * 60
-
-    @property
-    def max_json_body_bytes(self) -> int:
-        return self.max_json_body_kb * 1024
-
-    @property
-    def max_upload_bytes(self) -> int:
-        return self.max_upload_mb * 1024 * 1024
-
-    @property
-    def tenant_upload_quota_bytes(self) -> int:
-        return self.tenant_upload_quota_mb * 1024 * 1024
-
-    @property
-    def approx_chunk_tokens(self) -> int:
-        """Equivalencia aproximada em tokens, apenas para documentacao."""
-        return int(self.chunk_chars / CHARS_PER_TOKEN_ESTIMATE)
 
     def ensure_directories(self) -> None:
         """Cria diretorios locais necessarios."""
