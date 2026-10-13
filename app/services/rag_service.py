@@ -857,4 +857,18 @@ class RagService:
                 tenant_id, document_id
             )
 
-        await asyncio.to_//Sincronizando o arquivo completo para evitar erros de patch.
+        await asyncio.to_thread(
+            self.store.delete_document, tenant_id, document_id
+        )
+        await self._refresh_bm25(tenant_id)
+
+        logger.info(
+            "document_deleted",
+            extra={
+                "document_id": document_id,
+                "tenant_id": tenant_id,
+                "chunks_removed": len(existing),
+                "kag_relations_removed": removed_relations,
+            },
+        )
+        return True
