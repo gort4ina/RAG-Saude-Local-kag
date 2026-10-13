@@ -65,8 +65,8 @@ class RagOptions:
     retrieval_candidates: int = 12
     max_context_chunks: int = 4
     min_relevance_score: float = 0.45
-    chunk_chars: int = 1_900
-    chunk_overlap_chars: int = 285
+    chunk_chars: int = 1_000
+    chunk_overlap_chars: int = 150
     embed_batch_size: int = 16
     hybrid_search_enabled: bool = True
     rrf_k: int = 60
@@ -170,12 +170,7 @@ class RagService:
         *,
         tenant_id: str = LOCAL_TENANT_ID,
     ) -> UploadResponse:
-        """Extrai, divide, vetoriza e persiste um documento.
-
-        Se qualquer etapa falhar, a versao ja indexada do documento e
-        preservada: os trechos antigos so sao removidos depois que os novos
-        forem gravados com sucesso.
-        """
+        """Extrai, divide, vetoriza e persiste um documento."""
         document_id = document_hash(content)
         ingest_key = f"{tenant_id}:{document_id}"
 
@@ -201,7 +196,6 @@ class RagService:
     ) -> UploadResponse:
         started = time.perf_counter()
 
-        # pypdf e o splitter sao sincronos e pesados: fora do event loop.
         extraction = await asyncio.to_thread(
             extract_document,
             path,
@@ -216,7 +210,6 @@ class RagService:
                 load_sidecar, sidecar_path(self.upload_path, original_filename)
             )
         if extraction.frontmatter:
-            # Sidecar humano ganha do front-matter quando os dois existem.
             merged = dict(extraction.frontmatter)
             merged.update(confirmed)
             confirmed = merged
@@ -257,7 +250,6 @@ class RagService:
             for index in range(1, len(chunks) + 1)
         ]
 
-        # Grava primeiro. Se falhar aqui, nada foi removido.
         await asyncio.to_thread(
             self.store.upsert,
             tenant_id,
@@ -368,16 +360,6 @@ class RagService:
             self.store.count_chunks, tenant_id
         )
 
-        logger.info(
-            "chat_start",
-            extra={
-                "question_len": len(question),
-                "collection_count": outcome.collection_count,
-                "embedding_model": self.ollama.embedding_model,
-                "chat_model": self.ollama.chat_model,
-            },
-        )
-
         if outcome.collection_count == 0:
             logger.info("chat_empty_collection_early_return")
             outcome.early_exit_answer = EMPTY_BASE_ANSWER
@@ -398,43 +380,15 @@ class RagService:
             else None
         )
 
-        # Vector + BM25 + KAG são independentes: rodam em paralelo. O event
-        # loop libera a thread do embedder e o Postgres do KAG enquanto o
-        # Chroma responde, então o tempo de recuperação passa a ser o do
-        # ramo mais lento — e não a soma dos três.
         tenant_bm25 = self._bm25(tenant_id)
-        run_bm25 = self.options.hybrid_search_enabled and tenant_bm25.size > 0
-        if plan is not None and not plan.use_bm25:
-            run_bm25 = False
-        run_graph = self.knowledge_graph is not None
-        if plan is not None and not plan.use_graph:
-            run_graph = False
+        run_bm25 = self.options.hybrid_search_enabled and tenant_bm25.size > 0 and (plan is None or plan.use_bm25)
+        run_graph = self.knowledge_graph is not None and (plan is None or plan.use_graph)
 
         query_started = time.perf_counter()
-
-        async def _vector_task() -> list[dict[str, Any]]:
-            return await asyncio.to_thread(
-                self.store.query,
-                tenant_id,
-                embeddings[0],
-                self.options.retrieval_candidates,
-            )
-
-        async def _bm25_task() -> list[Any]:
-            if not run_bm25:
-                return []
-            return await asyncio.to_thread(
-                tenant_bm25.search, question, self.options.retrieval_candidates
-            )
-
-        async def _graph_task() -> list[KagRelation]:
-            if not run_graph:
-                return []
-            assert self.knowledge_graph is not None
-            return await self.knowledge_graph.search_context(tenant_id, question)
-
         vector_results, bm25_hits, graph_relations = await asyncio.gather(
-            _vector_task(), _bm25_task(), _graph_task()
+            asyncio.to_thread(self.store.query, tenant_id, embeddings[0], self.options.retrieval_candidates),
+            asyncio.to_thread(tenant_bm25.search, question, self.options.retrieval_candidates) if run_bm25 else asyncio.sleep(0, []),
+            self.knowledge_graph.search_context(tenant_id, question) if run_graph else asyncio.sleep(0, []),
         )
         stage_elapsed = time.perf_counter() - query_started
         stage_ms = int(stage_elapsed * 1000)
@@ -442,10 +396,8 @@ class RagService:
         outcome.bm25_query_ms = stage_ms if run_bm25 else 0
         outcome.graph_query_ms = stage_ms if run_graph else 0
         prom_metrics.observe_stage("vector", stage_elapsed)
-        if run_bm25:
-            prom_metrics.observe_stage("bm25", stage_elapsed)
-        if run_graph:
-            prom_metrics.observe_stage("graph", stage_elapsed)
+        if run_bm25: prom_metrics.observe_stage("bm25", stage_elapsed)
+        if run_graph: prom_metrics.observe_stage("graph", stage_elapsed)
 
         lexical_documents: dict[str, dict[str, Any]] = {}
         if run_bm25 and bm25_hits:
@@ -486,22 +438,6 @@ class RagService:
         outcome.fused_count = len(fused)
         outcome.scores = [round(candidate.vector_score, 3) for candidate in fused[:10]]
 
-        logger.info(
-            "chat_retrieval",
-            extra={
-                "collection_count": outcome.collection_count,
-                "vector_candidates": len(vector_results),
-                "bm25_candidates": len(bm25_hits),
-                "fused_candidates": outcome.fused_count,
-                "selected_chunks": len(outcome.selected),
-                "scores": outcome.scores,
-                "embed_ms": outcome.embed_ms,
-                "vector_query_ms": outcome.vector_query_ms,
-                "bm25_query_ms": outcome.bm25_query_ms,
-                "fusion_ms": outcome.fusion_ms,
-            },
-        )
-
         if not outcome.selected:
             outcome.early_exit_answer = NO_EVIDENCE_ANSWER
             return outcome
@@ -526,29 +462,62 @@ class RagService:
     async def _chunks_from_graph(
         self, tenant_id: str, relations: list[KagRelation]
     ) -> list[dict[str, Any]]:
-        """Converte arestas KAG em chunks candidatos para o RRF."""
+        \"\"\"Converte arestas KAG em chunks candidatos para o RRF.
+
+        Otimizado para reduzir round-trips ao store através de busca em lote.
+        \"\"\"
+        if not relations:
+            return []
+
         hits: list[dict[str, Any]] = []
         seen: set[str] = set()
         limit = self.options.retrieval_candidates
+
+        doc_ids = {rel.source_document_id for rel in relations if rel.source_document_id}
+        if not doc_ids:
+            return []
+
+        all_chunks_by_doc: dict[str, list[str]] = {}
+        for d_id in doc_ids:
+            ids = await asyncio.to_thread(
+                self.store.chunk_ids_for_document, tenant_id, d_id
+            )
+            if ids:
+                all_chunks_by_doc[d_id] = ids
+
+        all_needed_chunk_ids = [cid for ids in all_chunks_by_doc.values() for cid in ids]
+        if not all_needed_chunk_ids:
+            return []
+
+        batch_size = 100
+        all_found_chunks: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(all_needed_chunk_ids), batch_size):
+            batch = all_needed_chunk_ids[i : i + batch_size]
+            found_batch = await asyncio.to_thread(self.store.get_chunks, tenant_id, batch)
+            all_found_chunks.update(found_batch)
+
         for relation in relations:
             document_id = relation.source_document_id
-            if not document_id:
+            if not document_id or document_id not in all_chunks_by_doc:
                 continue
-            ids = await asyncio.to_thread(
-                self.store.chunk_ids_for_document, tenant_id, document_id
-            )
-            if not ids:
-                continue
-            found = await asyncio.to_thread(self.store.get_chunks, tenant_id, ids)
+
+            doc_chunk_ids = all_chunks_by_doc[document_id]
             ranked: list[tuple[int, str, dict[str, Any]]] = []
             span = relation.source_span or ""
-            for chunk_id, data in found.items():
+
+            for chunk_id in doc_chunk_ids:
                 if chunk_id in seen:
                     continue
+
+                data = all_found_chunks.get(chunk_id)
+                if not data:
+                    continue
+
                 metadata = data.get("metadata") or {}
                 article = str(metadata.get("article") or "")
                 score = 2 if span and (span in article or article in span) else 1
                 ranked.append((score, chunk_id, data))
+
             ranked.sort(key=lambda item: item[0], reverse=True)
             for _, chunk_id, data in ranked[:2]:
                 seen.add(chunk_id)
@@ -707,6 +676,7 @@ class RagService:
             yield {"type": "token", "content": outcome.early_exit_answer}
             yield {
                 "type": "done",
+                "duration_id": request_id,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
                 "grounded": False,
                 "requires_human_review": True,
@@ -758,8 +728,6 @@ class RagService:
             "grounded": audit.grounded,
             "requires_human_review": audit.requires_human_review,
             "review_reasons": audit.reasons,
-            # Texto canonico pos-auditoria: o frontend substitui o que
-            # streamou, porque uma resposta sem citacao valida e descartada.
             "answer": self._final_answer(answer_text, audit),
             "sources": [
                 source.model_dump()
@@ -876,13 +844,7 @@ class RagService:
     async def delete_document(
         self, document_id: str, *, tenant_id: str = LOCAL_TENANT_ID
     ) -> bool:
-        """Exclui somente o documento pertencente ao tenant autenticado.
-
-        Ordem importa: primeiro o KAG (para o grafo nunca apontar para chunks
-        órfãos), depois o vetor, depois o BM25. Se a limpeza do KAG falhar,
-        a chamada aborta e o documento continua indexado — melhor manter
-        tudo coerente que remover a metade visível para o usuário.
-        """
+        """Exclui somente o documento pertencente ao tenant autenticado."""
         existing = await asyncio.to_thread(
             self.store.chunk_ids_for_document, tenant_id, document_id
         )
