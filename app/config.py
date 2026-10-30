@@ -319,6 +319,36 @@ class Settings:
         default_factory=lambda: _bool_env("NEPTUNE_USE_IAM", "true")
     )
 
+    # ---------- AI Harness ----------
+    # Desligado por padrao. mode=evaluation so afeta runners offline;
+    # mode=active + enabled=true e necessario para o Repair Loop no chat
+    # (ainda nao ligado automaticamente em RagService neste lote).
+    harness_enabled: bool = field(
+        default_factory=lambda: _bool_env("HARNESS_ENABLED", "false")
+    )
+    harness_mode: str = field(
+        default_factory=lambda: os.getenv("HARNESS_MODE", "evaluation").strip().lower()
+    )
+    harness_max_retries: int = field(
+        default_factory=lambda: _int_env("HARNESS_MAX_RETRIES", "2")
+    )
+    harness_query_rewrite_enabled: bool = field(
+        default_factory=lambda: _bool_env("HARNESS_QUERY_REWRITE_ENABLED", "true")
+    )
+    harness_evidence_validation_enabled: bool = field(
+        default_factory=lambda: _bool_env(
+            "HARNESS_EVIDENCE_VALIDATION_ENABLED", "true"
+        )
+    )
+    harness_citation_validation_enabled: bool = field(
+        default_factory=lambda: _bool_env(
+            "HARNESS_CITATION_VALIDATION_ENABLED", "true"
+        )
+    )
+    harness_trace_enabled: bool = field(
+        default_factory=lambda: _bool_env("HARNESS_TRACE_ENABLED", "true")
+    )
+
     def __post_init__(self) -> None:
         if self.vector_backend not in {"chroma", "pgvector"}:
             raise ValueError("VECTOR_BACKEND deve ser 'chroma' ou 'pgvector'.")
@@ -326,6 +356,10 @@ class Settings:
             raise ValueError(
                 "KAG_GRAPH_BACKEND deve ser 'postgres' (local) ou 'neptune'."
             )
+        if self.harness_mode not in {"evaluation", "active"}:
+            raise ValueError("HARNESS_MODE deve ser 'evaluation' ou 'active'.")
+        if self.harness_max_retries < 0:
+            raise ValueError("HARNESS_MAX_RETRIES nao pode ser negativo.")
         if "*" in self.allowed_origins and len(self.allowed_origins) > 1:
             raise ValueError("ALLOWED_ORIGINS não pode misturar '*' com origens explícitas.")
 

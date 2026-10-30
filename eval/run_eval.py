@@ -31,15 +31,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import sys
 import time
-import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from app.harness.evaluation.dataset import load_evaluation_cases
+from app.harness.evaluation.reporter import write_report
+from app.harness.metrics.generation import summarize_generation
+from app.services.normalize import normalize_text
 
 DATASET_PATH = Path(__file__).with_name("dataset.json")
 
@@ -51,8 +54,7 @@ ABSTENTION_MARKERS = (
 
 
 def _normalize(text: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", text.lower())
-    return "".join(char for char in decomposed if not unicodedata.combining(char))
+    return normalize_text(text)
 
 
 def _is_abstention(answer: str) -> bool:
@@ -84,18 +86,6 @@ class CaseResult:
     chat_ms: int = 0
     load_duration_ms: int = 0
     tokens_per_second: float = 0.0
-
-
-def _percentile(values: list[float], percentile: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return round(ordered[0], 2)
-    rank = (len(ordered) - 1) * percentile
-    lower = ordered[int(rank)]
-    upper = ordered[min(int(rank) + 1, len(ordered) - 1)]
-    return round(lower + (upper - lower) * (rank - int(rank)), 2)
 
 
 def evaluate_case(client: httpx.Client, case: dict[str, Any]) -> CaseResult:
@@ -160,95 +150,7 @@ def evaluate_case(client: httpx.Client, case: dict[str, Any]) -> CaseResult:
 
 def summarize(results: list[CaseResult]) -> dict[str, Any]:
     """Agrega as metricas. Campos sem dados suficientes viram ``None``."""
-    answerable = [item for item in results if item.should_answer]
-    refusable = [item for item in results if not item.should_answer]
-    successful = [item for item in results if item.http_status == 200]
-
-    with_gold = [item for item in answerable if item.document_hit_at_5 is not None]
-    recall_at_5 = (
-        round(sum(1 for item in with_gold if item.document_hit_at_5) / len(with_gold), 3)
-        if with_gold
-        else None
-    )
-
-    grounded_answerable = [
-        item for item in answerable if item.http_status == 200
-    ]
-    grounded_rate = (
-        round(
-            sum(1 for item in grounded_answerable if item.grounded)
-            / len(grounded_answerable),
-            3,
-        )
-        if grounded_answerable
-        else None
-    )
-
-    # Citacao correta = resposta fundamentada com pelo menos uma fonte citada.
-    cited = [item for item in grounded_answerable if item.grounded]
-    citation_precision = (
-        round(sum(1 for item in cited if item.cited_sources > 0) / len(cited), 3)
-        if cited
-        else None
-    )
-
-    refused = [
-        item
-        for item in refusable
-        if item.http_status == 200 and (item.abstained or not item.grounded)
-    ]
-    abstention_accuracy = (
-        round(len(refused) / len(refusable), 3) if refusable else None
-    )
-
-    coverages = [
-        item.keyword_coverage
-        for item in answerable
-        if item.keyword_coverage is not None
-    ]
-    keyword_coverage = (
-        round(statistics.mean(coverages), 3) if coverages else None
-    )
-
-    latencies = [float(item.duration_ms) for item in successful]
-    embed_times = [float(item.embed_ms) for item in successful if item.embed_ms]
-    load_times = [
-        float(item.load_duration_ms) for item in successful if item.load_duration_ms
-    ]
-    chat_times = [float(item.chat_ms) for item in successful if item.chat_ms]
-    throughput = [
-        item.tokens_per_second for item in successful if item.tokens_per_second
-    ]
-
-    return {
-        "cases_total": len(results),
-        "cases_ok": len(successful),
-        "cases_failed": len(results) - len(successful),
-        "quality": {
-            "recall_at_5": recall_at_5,
-            "recall_at_5_evaluated_cases": len(with_gold),
-            "citation_precision": citation_precision,
-            "grounded_rate": grounded_rate,
-            "abstention_accuracy": abstention_accuracy,
-            "keyword_coverage": keyword_coverage,
-        },
-        "latency_ms": {
-            "p50": _percentile(latencies, 0.50),
-            "p95": _percentile(latencies, 0.95),
-            "mean": round(statistics.mean(latencies), 2) if latencies else None,
-            "embedding_mean": round(statistics.mean(embed_times), 2) if embed_times else None,
-            "model_load_mean": round(statistics.mean(load_times), 2) if load_times else None,
-            "generation_mean": round(statistics.mean(chat_times), 2) if chat_times else None,
-        },
-        "tokens_per_second_mean": (
-            round(statistics.mean(throughput), 2) if throughput else None
-        ),
-        "notes": [
-            "recall_at_5 e None quando nenhum caso tem 'expected_document' preenchido.",
-            "abstention_accuracy conta como acerto tanto a frase de recusa quanto grounded=false.",
-            "Todas as latencias vem dos campos devolvidos pela propria API.",
-        ],
-    }
+    return summarize_generation(results)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -270,8 +172,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    dataset = json.loads(args.dataset.read_text(encoding="utf-8"))
-    cases = dataset.get("cases") or []
+    loaded = load_evaluation_cases(args.dataset)
+    cases = [
+        {
+            "id": case.id,
+            "question": case.question,
+            "should_answer": case.should_answer,
+            "expected_document": case.expected_document,
+            "expected_keywords": case.expected_keywords,
+        }
+        for case in loaded
+    ]
     if args.limit > 0:
         cases = cases[: args.limit]
     if not cases:
@@ -304,7 +215,6 @@ def main(argv: list[str] | None = None) -> int:
     summary = summarize(results)
     report = {
         "base_url": args.base_url,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "summary": summary,
         "cases": [asdict(item) for item in results],
     }
@@ -312,10 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + json.dumps(summary, indent=2, ensure_ascii=False))
 
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(
-            json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        write_report(report, args.output, measured=True, harness_mode="evaluation")
         print(f"\nRelatorio salvo em {args.output}")
 
     return 0
