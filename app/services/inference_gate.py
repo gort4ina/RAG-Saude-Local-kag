@@ -11,12 +11,32 @@ from app.config import get_settings
 from app.services import metrics as prom_metrics
 
 
+class InferenceLease:
+    """Vaga obtida no gate, que so pode ser devolvida uma vez.
+
+    O streaming devolve a vaga em dois lugares (o fim do gerador e uma tarefa
+    de segundo plano da resposta). Se o cliente desconectar antes de o gerador
+    comecar, so a segunda roda; se os dois rodarem, a vaga nao pode ser
+    liberada em duplicidade, senao o semaforo passaria do limite.
+    """
+
+    def __init__(self, gate: InferenceGate) -> None:
+        self._gate = gate
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._gate.release()
+
+
 class InferenceGate:
     def __init__(self, concurrency: int, wait_seconds: float) -> None:
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
         self._wait_seconds = max(0.01, wait_seconds)
 
-    async def acquire(self) -> None:
+    async def acquire(self) -> InferenceLease:
         try:
             await asyncio.wait_for(
                 self._semaphore.acquire(), timeout=self._wait_seconds
@@ -28,6 +48,7 @@ class InferenceGate:
                 headers={"Retry-After": "5"},
             ) from exc
         prom_metrics.inference_gate_in_flight.inc()
+        return InferenceLease(self)
 
     def release(self) -> None:
         self._semaphore.release()

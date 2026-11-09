@@ -20,6 +20,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.extension import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
+from starlette.background import BackgroundTask
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1403,7 +1404,7 @@ async def chat_stream(
         query_text=question,
         ip_address=_client_ip(request),
     )
-    await gate.acquire()
+    lease = await gate.acquire()
 
     async def generate() -> AsyncIterator[str]:
         set_request_id(request_id)
@@ -1449,7 +1450,7 @@ async def chat_stream(
                 ensure_ascii=False,
             ) + "\n"
         finally:
-            gate.release()
+            lease.release()
             await audit.record(
                 request_id=request_id,
                 tenant_id=principal.tenant_id,
@@ -1463,6 +1464,9 @@ async def chat_stream(
                 ip_address=_client_ip(request),
             )
 
+    # O corpo do gerador so devolve a vaga se chegar a executar. Se o cliente
+    # cair antes disso, a tarefa de segundo plano da resposta devolve a vaga
+    # (a devolucao e idempotente), senao o gate ficaria ocupado para sempre.
     return StreamingResponse(
         generate(),
         media_type="application/x-ndjson",
@@ -1471,4 +1475,5 @@ async def chat_stream(
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+        background=BackgroundTask(lease.release),
     )
