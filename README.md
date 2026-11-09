@@ -280,7 +280,9 @@ só mais devagar.
 cp .env.example .env
 ```
 
-O `.env.example` já vem com os valores desta versão e explica cada bloco.
+O `.env.example` já vem com os valores desta versão e explica cada bloco. Ele sobe em modo `development` (Swagger aberto, cookies sem `Secure`, `ALLOWED_HOSTS=*`).
+
+**Para produção use outro arquivo:** `cp .env.production.example .env`. Ele liga `APP_ENV=production`, `COOKIE_SECURE=true`, domínios explícitos, Swagger fechado e modelos sempre residentes (`OLLAMA_KEEP_ALIVE=-1`). A API **recusa subir** se `POSTGRES_PASSWORD`, `JWT_SECRET` ou `BOOTSTRAP_ADMIN_PASSWORD` ainda tiverem o valor de exemplo, e exige TLS na frente do nginx.
 Troque obrigatoriamente `POSTGRES_PASSWORD`, `JWT_SECRET` e
 `BOOTSTRAP_ADMIN_PASSWORD`. Os que mais importam:
 

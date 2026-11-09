@@ -25,6 +25,8 @@ load_dotenv()
 # entre a unidade real (caracteres) e a unidade pedida (tokens).
 CHARS_PER_TOKEN_ESTIMATE = 3.8
 
+# Trechos que so aparecem nos valores de exemplo dos arquivos .env.*.example.
+_PLACEHOLDER_MARKERS = ("troque-", "troque_", "change-me", "change_me", "changeme")
 
 
 def _csv_env(name: str, default: str) -> list[str]:
@@ -408,6 +410,20 @@ class Settings:
             raise ValueError(
                 "JWT_SECRET deve ter pelo menos 32 caracteres aleatórios em produção."
             )
+        # Valores copiados dos arquivos .env.*.example passam nos testes de
+        # tamanho mas sao publicos: quem sobe produção sem trocar eles
+        # entregaria a chave de assinatura a qualquer pessoa que leia o repo.
+        for name, value in (
+            ("JWT_SECRET", self.jwt_secret),
+            ("BOOTSTRAP_ADMIN_PASSWORD", self.bootstrap_admin_password),
+            ("DATABASE_URL", self.database_url),
+        ):
+            lowered = value.lower()
+            if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+                raise ValueError(
+                    f"{name} ainda contem o valor de exemplo (troque-...). "
+                    "Gere um valor proprio antes de subir em producao."
+                )
         if not self.database_url.startswith("postgresql+asyncpg://"):
             raise ValueError("Produção exige PostgreSQL assíncrono em DATABASE_URL.")
         if "*" in self.allowed_origins:
