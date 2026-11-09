@@ -4,35 +4,26 @@ Este documento define como organizamos **branches**, **commits** e **versões**.
 
 ## 1. Branches
 
-```
-main ────●─────────────●──────────●───  só recebe release/hotfix (tag vX.Y.Z)
-          \           /          /
-develop ───●──●──●───●──●──●────●────   integração; todo PR de trabalho entra aqui
-              \  \  /      \  /
-               \  ●─●        ●          branches de trabalho (curtas)
-```
+Por enquanto o projeto usa **uma branch só: `main`**, sempre com o código atualizado. Não há `develop` nem branches de longa duração.
 
-| Branch | Para quê | Quem escreve | Regras |
-|--------|----------|--------------|--------|
-| `main` | Código estável, o que está (ou vai estar) em produção. Cada release recebe uma tag `vX.Y.Z`. | Só via PR vindo de `develop` ou `hotfix/*` | Protegida: PR obrigatório, CI verde, sem *force push* |
-| `develop` | Integração do que está pronto e testado. | Só via PR de branches de trabalho | Protegida: PR obrigatório, CI verde |
-| `feat/*` `fix/*` `perf/*` `refactor/*` `test/*` `docs/*` `chore/*` `ci/*` | Uma mudança com um propósito só. | Você | Nascem de `develop`, voltam para `develop` por PR, são apagadas após o merge |
-| `hotfix/*` | Correção urgente em produção. | Você | Nasce de `main`, volta para `main` **e** `develop` |
-| `archive/*` | Tags (não branches) que preservam trabalho antigo antes de apagar a branch. | — | Somente leitura |
+| Branch | Para quê | Regras |
+|--------|----------|--------|
+| `main` | Todo o código atualizado. Cada release recebe uma tag `vX.Y.Z`. | Os testes precisam passar antes de cada `push`. Sem *force push*. |
+| `<tipo>/<assunto>` (opcional) | Uma mudança grande ou arriscada que você quer revisar em PR antes de entrar. | Nasce de `main`, volta para `main`, é apagada após o merge. |
 
-### Nome das branches
+Para mudanças pequenas, commite direto na `main`. Quando o time crescer, volta-se ao modelo `main` + `develop` (com branches `feat/*`, `fix/*`, `hotfix/*`) e à proteção de branches no GitHub.
 
-`<tipo>/<assunto-curto-em-kebab-case>`, em português, sem acento:
+### Nome das branches temporárias
+
+`<tipo>/<assunto-curto-em-kebab-case>`, em português, sem acento, com o **mesmo tipo do commit principal**:
 
 ```
 feat/fila-de-ingestao
 fix/vazamento-do-gate
 perf/cache-de-resposta
-docs/guia-de-deploy
-chore/atualiza-dependencias
 ```
 
-Use o **mesmo tipo do commit principal**. Uma branch = um assunto. Se o PR precisa de "e também", são duas branches.
+Uma branch = um assunto. Se o PR precisa de "e também", são duas branches.
 
 ## 2. Commits
 
@@ -83,32 +74,29 @@ docs(arquitetura): auditoria de segurança, performance, escala e LLM
 1. **Um commit = uma mudança que passa nos testes sozinha.** Não misture refatoração com correção.
 2. O resumo diz **o que muda**; o corpo diz **por que**. O "como" está no diff.
 3. Não commite segredos, nem "só para testar". Veja a seção 5.
-4. Não reescreva histórico de branch já publicada (`push --force`), exceto na sua branch de trabalho antes do merge, e só com `--force-with-lease`.
-5. Merge de PR: **squash** para branches de trabalho com commits de rascunho; **merge commit** (`--no-ff`) para `develop → main`, mantendo o histórico da release.
+4. Não reescreva histórico já publicado (`push --force`). Em branch temporária ainda não mesclada, só com `--force-with-lease`.
+5. Evite `git add .`: adicione os arquivos da mudança, para que cada commit tenha um assunto só.
 
 ## 3. Fluxo de trabalho
 
 ```bash
-git switch develop && git pull
-git switch -c fix/assunto-curto
+git switch main && git pull
+python -m pytest -q            # parte de uma base verde
 
-# ... trabalhe, rode os testes ...
+# ... trabalhe ...
+
 python -m pytest -q
-
-git add <arquivos>             # evite `git add .`
+git add <arquivos>
 git commit                     # mensagem no padrão acima
-git push -u origin fix/assunto-curto
-# abra o PR para develop
+git push
 ```
-
-Antes de abrir o PR: testes passando, sem arquivos de ambiente, mensagem de commit no padrão, PR descrevendo o **porquê** (o template ajuda).
 
 ## 4. Versões e releases
 
 [Versionamento semântico](https://semver.org/lang/pt-BR/): `MAJOR.MINOR.PATCH`.
 
 - Enquanto o projeto for protótipo, usamos `0.y.z`: mudanças incompatíveis sobem o `y`.
-- Release: PR `develop → main`, depois a tag anotada na `main`:
+- Release: tag anotada na `main`.
 
 ```bash
 git switch main && git pull
