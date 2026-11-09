@@ -96,6 +96,8 @@ class OllamaMetrics:
     prompt_eval_duration_ms: int = 0
     eval_count: int = 0
     eval_duration_ms: int = 0
+    # "stop" = terminou sozinho; "length" = bateu em num_predict (resposta cortada).
+    done_reason: str = ""
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> OllamaMetrics:
@@ -114,6 +116,7 @@ class OllamaMetrics:
             prompt_eval_duration_ms=ms("prompt_eval_duration"),
             eval_count=count("eval_count"),
             eval_duration_ms=ms("eval_duration"),
+            done_reason=str(payload.get("done_reason") or ""),
         )
 
     @property
@@ -131,6 +134,7 @@ class OllamaMetrics:
             "eval_count": self.eval_count,
             "eval_duration_ms": self.eval_duration_ms,
             "tokens_per_second": self.tokens_per_second,
+            "done_reason": self.done_reason,
         }
 
 

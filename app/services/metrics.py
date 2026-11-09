@@ -94,6 +94,28 @@ inference_gate_in_flight = Gauge(
 )
 
 
+context_trimmed_total = Counter(
+    "rag_context_trimmed_total",
+    "Respostas em que o orcamento de tokens removeu trechos do contexto.",
+    registry=REGISTRY,
+)
+
+generation_flags_total = Counter(
+    "rag_generation_flags_total",
+    "Sinais de geracao ruim: truncated_output, context_full, context_tight.",
+    labelnames=("flag",),
+    registry=REGISTRY,
+)
+
+
+def observe_context_trim() -> None:
+    context_trimmed_total.inc()
+
+
+def observe_generation_flag(flag: str) -> None:
+    generation_flags_total.labels(flag=flag).inc()
+
+
 def observe_stage(stage: str, seconds: float) -> None:
     """Registra a duração de uma etapa. Aceita floats <= 0 sem estourar."""
     if seconds < 0:
@@ -123,11 +145,15 @@ __all__ = [
     "answers_total",
     "chat_eval_count",
     "chat_tokens_per_second",
+    "context_trimmed_total",
+    "generation_flags_total",
     "inference_gate_in_flight",
     "knowledge_chunks_total",
     "ml_stage_duration",
     "observe_answer",
     "observe_chat_metrics",
+    "observe_context_trim",
+    "observe_generation_flag",
     "observe_stage",
     "ollama_model_size_bytes",
     "ollama_model_vram_bytes",

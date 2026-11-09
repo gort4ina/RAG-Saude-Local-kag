@@ -110,6 +110,8 @@ def get_rag_service() -> RagService:
             reranker_enabled=settings.reranker_enabled,
             reranker_candidates=settings.reranker_candidates,
             query_router_enabled=settings.query_router_enabled,
+            context_tokens=settings.ollama_context_length,
+            answer_tokens=settings.ollama_num_predict,
         ),
         bm25=Bm25Index(),
         upload_path=settings.upload_path,

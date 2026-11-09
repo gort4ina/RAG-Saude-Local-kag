@@ -425,3 +425,10 @@ async def test_warmup_never_raises_when_ollama_is_down() -> None:
 
     client = _make_client(handler)
     assert await client.warmup() == {"chat": False, "embed": False}
+
+
+def test_metrics_parse_done_reason() -> None:
+    assert OllamaMetrics.from_payload({"done_reason": "length"}).done_reason == "length"
+    assert OllamaMetrics.from_payload({"done_reason": "stop"}).done_reason == "stop"
+    assert OllamaMetrics.from_payload({}).done_reason == ""
+    assert OllamaMetrics.from_payload({"done_reason": "length"}).as_log_fields()["done_reason"] == "length"

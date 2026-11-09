@@ -27,6 +27,7 @@ from app.schemas import (
 from app.services.bm25_index import Bm25Index
 from app.services.chunking import build_chunks
 from app.services.citations import CitationAudit, audit_answer
+from app.services.context_budget import ContextBudget, fit_context
 from app.services.document_loader import document_hash, extract_document
 from app.services.metadata import (
     STATUS_IN_FORCE,
@@ -89,6 +90,9 @@ class RagOptions:
     reranker_enabled: bool = False
     reranker_candidates: int = 20
     query_router_enabled: bool = True
+    # Orcamento de tokens do prompt (ver app/services/context_budget.py).
+    context_tokens: int = 4096
+    answer_tokens: int = 450
 
 
 @dataclass(slots=True)
@@ -108,6 +112,7 @@ class RetrievalOutcome:
     early_exit_answer: str | None = None
     knowledge_relations: list[KagRelation] = field(default_factory=list)
     graph_query_ms: int = 0
+    budget: ContextBudget | None = None
 
 
 class RagService:
@@ -480,20 +485,50 @@ class RagService:
             outcome.early_exit_answer = NO_EVIDENCE_ANSWER
             return outcome
 
-        outcome.sources = [
-            self._to_source(candidate, cited=False) for candidate in outcome.selected
-        ]
-        outcome.context_blocks = [
+        blocks = [
             f"[Fonte {index}]\n{candidate.text}"
             for index, candidate in enumerate(outcome.selected, start=1)
         ]
-        outcome.knowledge_relations = list(graph_relations)
-        if outcome.knowledge_relations:
-            outcome.context_blocks.append(
-                "[Relações KAG — orientação; confirme sempre pelas Fontes]\n"
-                + "\n".join(
-                    rel.as_prompt_line() for rel in outcome.knowledge_relations
-                )
+        relations = list(graph_relations)
+        relations_block = (
+            "[Relações KAG — orientação; confirme sempre pelas Fontes]\n"
+            + "\n".join(rel.as_prompt_line() for rel in relations)
+            if relations
+            else None
+        )
+
+        # O que nao cabe no contexto do modelo sai por inteiro e de forma
+        # visivel, em vez de o Ollama truncar o prompt sem avisar.
+        blocks, relations_block, budget = fit_context(
+            blocks,
+            relations_block,
+            system_prompt=build_system_prompt(),
+            question=question,
+            context_tokens=self.options.context_tokens,
+            answer_tokens=self.options.answer_tokens,
+        )
+        outcome.budget = budget
+        outcome.selected = outcome.selected[: len(blocks)]
+        outcome.sources = [
+            self._to_source(candidate, cited=False) for candidate in outcome.selected
+        ]
+        outcome.context_blocks = list(blocks)
+        if relations_block:
+            outcome.context_blocks.append(relations_block)
+            outcome.knowledge_relations = relations
+        if budget.trimmed:
+            prom_metrics.observe_context_trim()
+            logger.warning(
+                "context_budget_trimmed",
+                extra={
+                    "context_tokens": budget.context_tokens,
+                    "available_tokens": budget.available_tokens,
+                    "estimated_prompt_tokens": budget.estimated_prompt_tokens,
+                    "kept_chunks": budget.kept_chunks,
+                    "dropped_chunks": budget.dropped_chunks,
+                    "truncated_first": budget.truncated_first,
+                    "relations_dropped": budget.relations_dropped,
+                },
             )
         return outcome
 
@@ -693,6 +728,7 @@ class RagService:
         )
 
         audit = self._audit(result.content, outcome)
+        self._flag_generation(audit, result.metrics)
         prom_metrics.observe_answer(self._outcome_label(outcome, audit))
         duration_ms = int((time.perf_counter() - started) * 1000)
         self._log_completion(outcome, audit, chat_ms, duration_ms, result.metrics)
@@ -788,6 +824,7 @@ class RagService:
         )
         answer_text = "".join(pieces).strip()
         audit = self._audit(answer_text, outcome)
+        self._flag_generation(audit, metrics)
         prom_metrics.observe_answer(self._outcome_label(outcome, audit))
         duration_ms = int((time.perf_counter() - started) * 1000)
         self._log_completion(outcome, audit, chat_ms, duration_ms, metrics)
@@ -825,6 +862,46 @@ class RagService:
             return "grounded"
         return "needs_review"
 
+    def _flag_generation(self, audit: CitationAudit, metrics: OllamaMetrics) -> None:
+        """Marca para revisao humana as respostas que o limite de tokens afetou.
+
+        - ``done_reason == "length"``: a resposta bateu em ``num_predict`` e
+          pode estar cortada no meio (ex.: sem a secao "Pontos a confirmar");
+        - ``prompt_eval_count`` encostando em ``num_ctx``: o Ollama pode ter
+          descartado parte do prompt, inclusive trechos da evidencia.
+        """
+        if metrics.done_reason == "length":
+            audit.reasons.append(
+                "A resposta foi cortada pelo limite de tokens de saida e pode estar incompleta."
+            )
+            audit.requires_human_review = True
+            prom_metrics.observe_generation_flag("truncated_output")
+
+        context = self.options.context_tokens
+        used = metrics.prompt_eval_count
+        if used <= 0 or context <= 0:
+            return
+        if used >= int(context * 0.98):
+            audit.reasons.append(
+                "O prompt ocupou todo o contexto do modelo; parte da evidencia pode ter sido descartada."
+            )
+            audit.requires_human_review = True
+            prom_metrics.observe_generation_flag("context_full")
+            logger.warning(
+                "prompt_filled_context",
+                extra={"prompt_eval_count": used, "context_tokens": context},
+            )
+        elif used + self.options.answer_tokens > context:
+            prom_metrics.observe_generation_flag("context_tight")
+            logger.warning(
+                "prompt_near_context_limit",
+                extra={
+                    "prompt_eval_count": used,
+                    "answer_tokens": self.options.answer_tokens,
+                    "context_tokens": context,
+                },
+            )
+
     def _log_completion(
         self,
         outcome: RetrievalOutcome,
@@ -854,6 +931,13 @@ class RagService:
                 "requires_human_review": audit.requires_human_review,
                 "hybrid": self.options.hybrid_search_enabled,
                 "bm25_index_size": self.bm25.size,
+                # estimativa x medido (prompt_eval_count): calibra CHARS_PER_TOKEN
+                "prompt_tokens_estimated": (
+                    outcome.budget.estimated_prompt_tokens if outcome.budget else 0
+                ),
+                "context_chunks_dropped": (
+                    outcome.budget.dropped_chunks if outcome.budget else 0
+                ),
                 **metrics.as_log_fields(),
             },
         )

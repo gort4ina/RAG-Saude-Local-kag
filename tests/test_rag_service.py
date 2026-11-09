@@ -29,7 +29,9 @@ class FakeOllama:
         chat_error: Exception | None = None,
         embed_error: Exception | None = None,
         reply: str = "Resposta baseada no documento [Fonte 1].",
+        metrics: OllamaMetrics | None = None,
     ) -> None:
+        self.metrics = metrics or OllamaMetrics(eval_count=5)
         self.chat_error = chat_error
         self.embed_error = embed_error
         self.reply = reply
@@ -48,7 +50,7 @@ class FakeOllama:
         self.last_user_prompt = user_prompt
         if self.chat_error is not None:
             raise self.chat_error
-        return ChatResult(content=self.reply, metrics=OllamaMetrics(eval_count=5))
+        return ChatResult(content=self.reply, metrics=self.metrics)
 
     async def chat_stream(self, system_prompt: str, user_prompt: str):
         self.chat_calls += 1
@@ -57,7 +59,7 @@ class FakeOllama:
             raise self.chat_error
         for piece in self.reply.split(" "):
             yield StreamEvent(content=piece + " ")
-        yield StreamEvent(done=True, metrics=OllamaMetrics(eval_count=5))
+        yield StreamEvent(done=True, metrics=self.metrics)
 
 
 class FakeStore:
@@ -551,3 +553,80 @@ async def test_store_without_get_embeddings_keeps_old_behavior() -> None:
     response = await service.answer("O que e SNGPC?")
 
     assert 2 not in _lexical_ids(response)
+
+
+# ---------------------------------------------------------------------------
+# L2: orcamento de tokens e sinais de geracao
+# ---------------------------------------------------------------------------
+
+
+def _long_text(prefix: str, words: int = 300) -> str:
+    """Texto longo e sem sobreposicao entre chunks (evita a deduplicacao)."""
+    return " ".join(f"{prefix}termo{j}" for j in range(words))
+
+
+@pytest.mark.asyncio
+async def test_context_that_does_not_fit_is_trimmed_before_the_model() -> None:
+    store = FakeStore(
+        [_result(_long_text(chr(97 + i)), 0.95 - i * 0.01, chunk=i + 1) for i in range(4)]
+    )
+    ollama = FakeOllama(reply="Resposta [Fonte 1].")
+
+    response = await _service(store, ollama).answer("Quais sao os requisitos?")
+
+    prompt = ollama.last_user_prompt
+    assert "[Fonte 1]" in prompt
+    assert "[Fonte 4]" not in prompt  # o menos relevante saiu inteiro
+    # fontes mostradas ao usuario batem com o que o modelo realmente viu
+    assert len(response.retrieved_sources) < 4
+    assert [s.chunk for s in response.retrieved_sources] == list(
+        range(1, len(response.retrieved_sources) + 1)
+    )
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_is_flagged_for_human_review() -> None:
+    store = FakeStore([_result("Art. 5 deve manter escrituracao.", 0.95)])
+    ollama = FakeOllama(
+        metrics=OllamaMetrics(eval_count=450, prompt_eval_count=900, done_reason="length")
+    )
+
+    response = await _service(store, ollama).answer("O que diz o artigo 5?")
+
+    assert response.requires_human_review is True
+    assert any("cortada" in reason for reason in response.review_reasons)
+
+
+@pytest.mark.asyncio
+async def test_prompt_that_filled_the_context_is_flagged() -> None:
+    store = FakeStore([_result("Art. 5 deve manter escrituracao.", 0.95)])
+    ollama = FakeOllama(metrics=OllamaMetrics(eval_count=50, prompt_eval_count=4090))
+
+    response = await _service(store, ollama).answer("O que diz o artigo 5?")
+
+    assert response.requires_human_review is True
+    assert any("ocupou todo o contexto" in reason for reason in response.review_reasons)
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_headroom_is_not_flagged() -> None:
+    store = FakeStore([_result("Art. 5 deve manter escrituracao.", 0.95, status="vigente_confirmada")])
+    ollama = FakeOllama(metrics=OllamaMetrics(eval_count=120, prompt_eval_count=1800))
+
+    response = await _service(store, ollama).answer("O que diz o artigo 5?")
+
+    assert not any("contexto" in reason for reason in response.review_reasons)
+    assert not any("cortada" in reason for reason in response.review_reasons)
+
+
+@pytest.mark.asyncio
+async def test_streaming_also_flags_truncated_output() -> None:
+    store = FakeStore([_result("Art. 5 deve manter escrituracao.", 0.95)])
+    ollama = FakeOllama(metrics=OllamaMetrics(eval_count=450, done_reason="length"))
+
+    events = [e async for e in _service(store, ollama).answer_stream("O que diz o artigo 5?")]
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["requires_human_review"] is True
+    assert any("cortada" in reason for reason in done["review_reasons"])
