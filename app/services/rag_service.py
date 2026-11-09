@@ -55,6 +55,18 @@ logger = logging.getLogger(__name__)
 LOCAL_TENANT_ID = "local"
 
 
+async def _timed(awaitable: Any) -> tuple[Any, float]:
+    """Aguarda ``awaitable`` e devolve ``(resultado, segundos)``.
+
+    ``None`` representa uma etapa desligada: devolve lista vazia sem custo.
+    """
+    if awaitable is None:
+        return [], 0.0
+    started = time.perf_counter()
+    result = await awaitable
+    return result, time.perf_counter() - started
+
+
 @dataclass(frozen=True, slots=True)
 class RagOptions:
     """Parametros de recuperacao e chunking.
@@ -384,20 +396,43 @@ class RagService:
         run_bm25 = self.options.hybrid_search_enabled and tenant_bm25.size > 0 and (plan is None or plan.use_bm25)
         run_graph = self.knowledge_graph is not None and (plan is None or plan.use_graph)
 
-        query_started = time.perf_counter()
-        vector_results, bm25_hits, graph_relations = await asyncio.gather(
-            asyncio.to_thread(self.store.query, tenant_id, embeddings[0], self.options.retrieval_candidates),
-            asyncio.to_thread(tenant_bm25.search, question, self.options.retrieval_candidates) if run_bm25 else asyncio.sleep(0, []),
-            self.knowledge_graph.search_context(tenant_id, question) if run_graph else asyncio.sleep(0, []),
+        # Cada etapa mede o proprio tempo: as tres rodam em paralelo, entao o
+        # tempo do gather inteiro seria o da mais lenta e apareceria igual nas
+        # tres metricas.
+        (
+            (vector_results, vector_elapsed),
+            (bm25_hits, bm25_elapsed),
+            (graph_relations, graph_elapsed),
+        ) = await asyncio.gather(
+            _timed(
+                asyncio.to_thread(
+                    self.store.query,
+                    tenant_id,
+                    embeddings[0],
+                    self.options.retrieval_candidates,
+                )
+            ),
+            _timed(
+                asyncio.to_thread(
+                    tenant_bm25.search, question, self.options.retrieval_candidates
+                )
+                if run_bm25
+                else None
+            ),
+            _timed(
+                self.knowledge_graph.search_context(tenant_id, question)
+                if run_graph
+                else None
+            ),
         )
-        stage_elapsed = time.perf_counter() - query_started
-        stage_ms = int(stage_elapsed * 1000)
-        outcome.vector_query_ms = stage_ms
-        outcome.bm25_query_ms = stage_ms if run_bm25 else 0
-        outcome.graph_query_ms = stage_ms if run_graph else 0
-        prom_metrics.observe_stage("vector", stage_elapsed)
-        if run_bm25: prom_metrics.observe_stage("bm25", stage_elapsed)
-        if run_graph: prom_metrics.observe_stage("graph", stage_elapsed)
+        outcome.vector_query_ms = int(vector_elapsed * 1000)
+        outcome.bm25_query_ms = int(bm25_elapsed * 1000) if run_bm25 else 0
+        outcome.graph_query_ms = int(graph_elapsed * 1000) if run_graph else 0
+        prom_metrics.observe_stage("vector", vector_elapsed)
+        if run_bm25:
+            prom_metrics.observe_stage("bm25", bm25_elapsed)
+        if run_graph:
+            prom_metrics.observe_stage("graph", graph_elapsed)
 
         lexical_documents: dict[str, dict[str, Any]] = {}
         if run_bm25 and bm25_hits:
