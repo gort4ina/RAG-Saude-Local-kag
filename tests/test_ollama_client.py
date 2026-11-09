@@ -361,3 +361,67 @@ def test_metrics_from_empty_payload_is_zeroed() -> None:
     metrics = OllamaMetrics.from_payload({})
     assert metrics.total_duration_ms == 0
     assert metrics.tokens_per_second == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Fase 0: keep_alive configuravel e warm-up
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("10m", "10m"), ("-1", -1), ("0", 0), ("1h", "1h")],
+)
+def test_keep_alive_value_is_sent_in_the_format_ollama_accepts(
+    configured: str, expected: object
+) -> None:
+    client = _make_client(lambda request: httpx.Response(200), keep_alive=configured)
+    assert client._keep_alive_value() == expected
+    payload = client._chat_payload("sys", "user", stream=False)
+    assert payload["keep_alive"] == expected
+
+
+@pytest.mark.asyncio
+async def test_embed_sends_keep_alive() -> None:
+    import json as _json
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(_json.loads(request.content))
+        return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})
+
+    client = _make_client(handler, keep_alive="-1")
+    await client.embed(["texto"])
+    assert seen["keep_alive"] == -1
+
+
+@pytest.mark.asyncio
+async def test_warmup_loads_both_models() -> None:
+    import json as _json
+
+    calls: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, _json.loads(request.content)))
+        return httpx.Response(200, json={})
+
+    client = _make_client(handler, keep_alive="-1")
+    result = await client.warmup()
+
+    assert result == {"chat": True, "embed": True}
+    paths = [path for path, _ in calls]
+    assert paths == ["/api/generate", "/api/embed"]
+    assert calls[0][1]["model"] == "qwen2.5:3b"
+    assert calls[0][1]["prompt"] == ""
+    assert calls[1][1]["model"] == "embeddinggemma"
+    assert all(body["keep_alive"] == -1 for _, body in calls)
+
+
+@pytest.mark.asyncio
+async def test_warmup_never_raises_when_ollama_is_down() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    client = _make_client(handler)
+    assert await client.warmup() == {"chat": False, "embed": False}

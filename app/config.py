@@ -26,6 +26,7 @@ load_dotenv()
 CHARS_PER_TOKEN_ESTIMATE = 3.8
 
 
+
 def _csv_env(name: str, default: str) -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
@@ -142,6 +143,17 @@ class Settings:
     )
     ollama_temperature: float = field(
         default_factory=lambda: _float_env("OLLAMA_TEMPERATURE", "0.1")
+    )
+    # Quanto tempo o modelo fica na VRAM depois do ultimo uso. Aceita duracao
+    # ("10m", "1h") ou "-1" para manter residente (recomendado em maquina
+    # dedicada). Vale tambem para a chamada de embeddings.
+    ollama_keep_alive: str = field(
+        default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip() or "10m"
+    )
+    # Carrega os dois modelos na VRAM logo apos a subida, em segundo plano,
+    # para que a primeira pergunta nao pague ~1 min de carregamento.
+    ollama_warmup: bool = field(
+        default_factory=lambda: _bool_env("OLLAMA_WARMUP", "true")
     )
 
     # ---------- Persistencia ----------

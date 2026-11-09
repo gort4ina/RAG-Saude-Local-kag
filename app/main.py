@@ -193,6 +193,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await warmup()
     await bootstrap_admin()
 
+    # Aquecimento dos modelos em segundo plano: carregar o gerador leva ~40 s e
+    # nao pode atrasar o healthcheck nem a subida da API. Se a primeira pergunta
+    # chegar antes, ela simplesmente espera o mesmo carregamento.
+    warmup_task: asyncio.Task | None = None
+    warm_models = getattr(service.ollama, "warmup", None)
+    if settings.ollama_warmup and callable(warm_models):
+        warmup_task = asyncio.create_task(warm_models(), name="ollama-warmup")
+
     # Poda de AuditEvent expirados: roda em background em vez de bloquear a
     # subida. Uma execução falha só emite log e a próxima iteração tenta de
     # novo — o loop não pode derrubar o app.
@@ -219,6 +227,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if warmup_task is not None and not warmup_task.done():
+            warmup_task.cancel()
+            try:
+                await warmup_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if prune_task is not None:
             prune_task.cancel()
             try:

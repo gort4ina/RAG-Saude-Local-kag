@@ -166,7 +166,9 @@ class OllamaClient:
         num_ctx: int = 4096,
         num_predict: int = 450,
         temperature: float = 0.1,
+        keep_alive: str = "10m",
     ) -> None:
+        self.keep_alive = keep_alive
         self.base_url = base_url.rstrip("/")
         self.chat_model = chat_model
         self.embedding_model = embedding_model
@@ -373,11 +375,69 @@ class OllamaClient:
             return []
         return [item for item in (data.get("models") or []) if isinstance(item, dict)]
 
+    def _keep_alive_value(self) -> str | int:
+        """``keep_alive`` no formato que o Ollama aceita.
+
+        Duracao ("10m") vai como texto; um numero ("-1", "0", "600") vai como
+        inteiro, porque ``"-1"`` entre aspas nao e uma duracao valida.
+        """
+        raw = str(self.keep_alive).strip()
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+
+    async def warmup(self) -> dict[str, bool]:
+        """Carrega os dois modelos na VRAM sem gerar nada. Nao levanta excecoes.
+
+        Sem isso a primeira pergunta paga o carregamento do gerador (~40 s) e
+        o do modelo de embeddings (~14 s) [medido na GTX 1650].
+        """
+        keep_alive = self._keep_alive_value()
+        results: dict[str, bool] = {}
+        steps = (
+            (
+                "chat",
+                self.chat_model,
+                "/api/generate",
+                {"model": self.chat_model, "prompt": "", "keep_alive": keep_alive},
+            ),
+            (
+                "embed",
+                self.embedding_model,
+                "/api/embed",
+                {
+                    "model": self.embedding_model,
+                    "input": "aquecimento",
+                    "keep_alive": keep_alive,
+                },
+            ),
+        )
+        for name, model, path, payload in steps:
+            try:
+                response = await self.client.post(
+                    path, json=payload, timeout=self.chat_timeout
+                )
+                response.raise_for_status()
+                results[name] = True
+            except Exception as exc:
+                results[name] = False
+                logger.warning(
+                    "ollama_warmup_failed",
+                    extra={"model": model, "error": type(exc).__name__},
+                )
+        logger.info("ollama_warmup_done", extra={"result": results})
+        return results
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Converte textos em vetores usando o modelo de embeddings."""
         if not texts:
             return []
-        payload = {"model": self.embedding_model, "input": texts}
+        payload = {
+            "model": self.embedding_model,
+            "input": texts,
+            "keep_alive": self._keep_alive_value(),
+        }
         try:
             response = await self.client.post(
                 "/api/embed", json=payload, timeout=self.embed_timeout
@@ -410,7 +470,7 @@ class OllamaClient:
         return {
             "model": self.chat_model,
             "stream": stream,
-            "keep_alive": "10m",
+            "keep_alive": self._keep_alive_value(),
             "options": {
                 "temperature": self.temperature,
                 "num_ctx": self.num_ctx,

@@ -63,6 +63,7 @@ def get_rag_service() -> RagService:
         num_ctx=settings.ollama_context_length,
         num_predict=settings.ollama_num_predict,
         temperature=settings.ollama_temperature,
+        keep_alive=settings.ollama_keep_alive,
     )
     if settings.vector_backend == "pgvector":
         from app.services.pgvector_store import PgVectorStore
