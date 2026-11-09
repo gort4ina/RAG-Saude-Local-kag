@@ -39,6 +39,7 @@ class VectorStore:
         self.embedding_model = embedding_model
         self._doc_cache: dict[str, list[dict[str, Any]]] = {}
         self._bytes_cache: dict[str, int] = {}
+        self._count_cache: dict[str, int] = {}
         try:
             self._client = chromadb.PersistentClient(path=str(path))
             self.collection = self._open_collection()
@@ -75,6 +76,7 @@ class VectorStore:
     def _invalidate(self, tenant_id: str) -> None:
         self._doc_cache.pop(tenant_id, None)
         self._bytes_cache.pop(tenant_id, None)
+        self._count_cache.pop(tenant_id, None)
 
     def tenant_text_bytes(self, tenant_id: str) -> int:
         if tenant_id in self._bytes_cache:
@@ -145,14 +147,27 @@ class VectorStore:
             return False
 
     def count_chunks(self, tenant_id: str) -> int:
+        """Quantidade de trechos do tenant.
+
+        O Chroma nao conta com filtro: ``get(where=...)`` devolve todos os ids
+        so para medir o tamanho da lista, o que custava O(N) a cada pergunta.
+        O resultado fica em cache e e descartado em toda escrita (``upsert``,
+        ``delete_*``, ``update_document_status``) feita por este processo, o
+        unico que escreve na colecao.
+        """
+        cached = self._count_cache.get(tenant_id)
+        if cached is not None:
+            return cached
         try:
             result = self.collection.get(
                 where={"tenant_id": tenant_id}, include=[]
             )
-            return len(result.get("ids") or [])
+            total = len(result.get("ids") or [])
         except Exception:  # pragma: no cover
             logger.exception("chroma_count_failed")
             return 0
+        self._count_cache[tenant_id] = total
+        return total
 
     def query(
         self, tenant_id: str, embedding: list[float], limit: int

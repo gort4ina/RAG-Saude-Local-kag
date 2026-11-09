@@ -135,3 +135,43 @@ def test_tenant_filter_prevents_cross_organization_leak(tmp_path: Path) -> None:
     store.delete_document("tenant-a", "doc")
     assert store.count_chunks("tenant-a") == 0
     assert store.count_chunks("tenant-b") == 1
+
+
+# ---------------------------------------------------------------------------
+# Fase 0: count_chunks em cache
+# ---------------------------------------------------------------------------
+
+
+def test_count_chunks_is_cached_until_a_write(tmp_path: Path) -> None:
+    """A contagem nao varre a colecao a cada pergunta, mas nunca fica velha."""
+    store = _store(tmp_path / "chroma")
+    meta = {"tenant_id": TENANT, "document_id": "a", "filename": "a.md"}
+
+    assert store.count_chunks(TENANT) == 0
+    store.upsert(TENANT, ["a:1"], ["texto"], [[0.1, 0.2]], [meta])
+    assert store.count_chunks(TENANT) == 1
+
+    calls = {"get": 0}
+
+    class SpyCollection:
+        """Conta chamadas a get() e repassa tudo o mais a colecao real."""
+
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def get(self, *args, **kwargs):
+            calls["get"] += 1
+            return self._inner.get(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    store.collection = SpyCollection(store.collection)
+    assert store.count_chunks(TENANT) == 1
+    assert store.count_chunks(TENANT) == 1
+    assert calls["get"] == 0  # os dois vieram do cache
+
+    store.upsert(TENANT, ["a:2"], ["outro"], [[0.3, 0.4]], [meta])
+    assert store.count_chunks(TENANT) == 2  # escrita invalidou o cache
+    store.delete_document(TENANT, "a")
+    assert store.count_chunks(TENANT) == 0
