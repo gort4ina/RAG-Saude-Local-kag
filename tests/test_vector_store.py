@@ -175,3 +175,24 @@ def test_count_chunks_is_cached_until_a_write(tmp_path: Path) -> None:
     assert store.count_chunks(TENANT) == 2  # escrita invalidou o cache
     store.delete_document(TENANT, "a")
     assert store.count_chunks(TENANT) == 0
+
+
+def test_get_embeddings_returns_vectors_by_id_and_respects_tenant(tmp_path: Path) -> None:
+    store = _store(tmp_path / "chroma")
+    store.upsert(
+        TENANT,
+        ["a:1", "a:2"],
+        ["um", "dois"],
+        [[0.1, 0.2], [0.3, 0.4]],
+        [
+            {"tenant_id": TENANT, "document_id": "a", "filename": "a.md"},
+            {"tenant_id": TENANT, "document_id": "a", "filename": "a.md"},
+        ],
+    )
+
+    found = store.get_embeddings(TENANT, ["a:2", "inexistente"])
+
+    assert set(found) == {"a:2"}
+    assert found["a:2"] == pytest.approx([0.3, 0.4])
+    assert store.get_embeddings("outro-tenant", ["a:2"]) == {}
+    assert store.get_embeddings(TENANT, []) == {}

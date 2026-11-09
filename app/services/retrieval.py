@@ -26,6 +26,7 @@ Sobre o score reportado:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,6 +73,22 @@ class Candidate:
             return int(self.metadata.get("chunk", 0))
         except (TypeError, ValueError):
             return 0
+
+
+def cosine_score(left: list[float], right: list[float]) -> float:
+    """Similaridade de cosseno limitada a 0..1, a mesma escala do ``score`` do store.
+
+    Usada para dar um score vetorial real aos candidatos que so o BM25 achou:
+    sem ele eles ficam com 0.0 e o filtro de relevancia os descarta.
+    """
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_left = math.sqrt(sum(a * a for a in left))
+    norm_right = math.sqrt(sum(b * b for b in right))
+    if norm_left == 0.0 or norm_right == 0.0:
+        return 0.0
+    return max(0.0, min(1.0, dot / (norm_left * norm_right)))
 
 
 def _jaccard(left: frozenset[str], right: frozenset[str]) -> float:
@@ -128,6 +145,10 @@ def fuse(
             chunk_id=hit.chunk_id,
             text=str(source.get("text", "")),
             metadata=dict(source.get("metadata") or {}),
+            # ``vector_score`` e preenchido pelo servico com o cosseno real
+            # entre a pergunta e este chunk. Sem ele o candidato so-lexico
+            # ficava em 0.0 e era descartado pelo filtro de relevancia.
+            vector_score=float(source.get("vector_score", 0.0)),
             bm25_score=hit.score,
             bm25_rank=rank,
             lexical_score=normalized,

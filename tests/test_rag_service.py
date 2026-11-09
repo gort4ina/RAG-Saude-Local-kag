@@ -491,3 +491,63 @@ async def test_stream_done_carries_the_audited_answer() -> None:
     assert done["type"] == "done"
     assert done["answer"] == NO_EVIDENCE_ANSWER
     assert done["grounded"] is False
+
+
+# ---------------------------------------------------------------------------
+# L11: acerto so-BM25 pontuado com o cosseno real
+# ---------------------------------------------------------------------------
+
+
+class LexicalOnlyStore(FakeStore):
+    """O vetor so devolve o chunk A; o chunk B so o BM25 enxerga."""
+
+    def __init__(self, vector_of_b: list[float] | None) -> None:
+        a = _result("Texto generico sobre boas praticas de armazenamento.", 0.10, chunk=1)
+        b = _result("O SNGPC registra a movimentacao de medicamentos controlados.", 0.0, chunk=2)
+        super().__init__(results=[a, b], chunks=2)
+        self._a = a
+        self._vector_of_b = vector_of_b
+
+    def query(self, tenant_id: str, embedding: list[float], limit: int) -> list[dict]:
+        return [self._a]
+
+    def get_embeddings(self, tenant_id: str, ids: list[str]) -> dict[str, list[float]]:
+        if self._vector_of_b is None:
+            return {}
+        return {"doc:2": self._vector_of_b} if "doc:2" in ids else {}
+
+
+def _lexical_ids(response) -> list[str]:  # noqa: ANN001
+    return [source.chunk for source in response.retrieved_sources]
+
+
+@pytest.mark.asyncio
+async def test_bm25_only_chunk_enters_context_when_its_real_cosine_is_high() -> None:
+    # FakeOllama embeda a pergunta como [0.1, 0.2]; o vetor de B aponta igual.
+    service = _service(LexicalOnlyStore([0.1, 0.2]), hybrid=True)
+    await service.warmup()
+
+    response = await service.answer("O que e SNGPC?")
+
+    assert 2 in _lexical_ids(response)
+
+
+@pytest.mark.asyncio
+async def test_bm25_only_chunk_stays_out_when_its_real_cosine_is_low() -> None:
+    # Vetor ortogonal ao da pergunta: o BM25 achou, mas semanticamente nao serve.
+    service = _service(LexicalOnlyStore([0.2, -0.1]), hybrid=True)
+    await service.warmup()
+
+    response = await service.answer("O que e SNGPC?")
+
+    assert 2 not in _lexical_ids(response)
+
+
+@pytest.mark.asyncio
+async def test_store_without_get_embeddings_keeps_old_behavior() -> None:
+    service = _service(LexicalOnlyStore(None), hybrid=True)
+    await service.warmup()
+
+    response = await service.answer("O que e SNGPC?")
+
+    assert 2 not in _lexical_ids(response)

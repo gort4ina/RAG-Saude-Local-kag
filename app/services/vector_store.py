@@ -242,6 +242,35 @@ class VectorStore:
             }
         return found
 
+    def get_embeddings(
+        self, tenant_id: str, ids: list[str]
+    ) -> dict[str, list[float]]:
+        """Vetores de chunks especificos, para pontuar acertos so-BM25.
+
+        Extensao opcional do contrato: o ``RagService`` so a usa se existir.
+        """
+        if not ids:
+            return {}
+        try:
+            result = self.collection.get(
+                ids=ids,
+                where={"tenant_id": tenant_id},
+                include=["embeddings"],
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.exception("chroma_get_embeddings_failed")
+            raise VectorStoreUnavailableError(
+                "ChromaDB falhou ao recuperar embeddings por id."
+            ) from exc
+
+        vectors = result.get("embeddings")
+        if vectors is None:
+            return {}
+        return {
+            str(chunk_id): [float(value) for value in vector]
+            for chunk_id, vector in zip(result.get("ids") or [], vectors)
+        }
+
     def all_chunks(self, tenant_id: str) -> list[tuple[str, str]]:
         """Todos os ``(id, texto)`` da colecao, para reconstruir o BM25."""
         try:

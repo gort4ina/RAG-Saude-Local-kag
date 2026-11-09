@@ -115,6 +115,16 @@ class PgVectorStore:
                 }
         return found
 
+    def get_embeddings(
+        self, tenant_id: str, ids: list[str]
+    ) -> dict[str, list[float]]:
+        wanted = set(ids)
+        return {
+            row["id"]: list(row["embedding"])
+            for row in self._all_rows(tenant_id)
+            if row["id"] in wanted
+        }
+
     def all_chunks(self, tenant_id: str) -> list[tuple[str, str]]:
         return [(row["id"], row["content"]) for row in self._all_rows(tenant_id)]
 

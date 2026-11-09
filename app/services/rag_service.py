@@ -39,7 +39,7 @@ from app.services.metadata import (
 )
 from app.services import metrics as prom_metrics
 from app.services.ollama_client import OllamaClient, OllamaMetrics
-from app.services.retrieval import Candidate, fuse, select_context
+from app.services.retrieval import Candidate, cosine_score, fuse, select_context
 from app.services.safety import (
     DISCLAIMER,
     EMPTY_BASE_ANSWER,
@@ -442,6 +442,9 @@ class RagService:
                 lexical_documents = await asyncio.to_thread(
                     self.store.get_chunks, tenant_id, missing
                 )
+                lexical_documents = await self._score_lexical_only(
+                    tenant_id, embeddings[0], lexical_documents
+                )
 
         graph_hits: list[dict[str, Any]] = []
         if self.options.graph_in_rrf and graph_relations:
@@ -493,6 +496,39 @@ class RagService:
                 )
             )
         return outcome
+
+    async def _score_lexical_only(
+        self,
+        tenant_id: str,
+        query_embedding: list[float],
+        documents: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Da a cada chunk achado so pelo BM25 o cosseno real com a pergunta.
+
+        O filtro de relevancia usa o score vetorial. Um chunk que o vetor nao
+        trouxe entre os candidatos ficava com 0.0 e era descartado, mesmo
+        sendo o trecho certo para uma sigla ou termo raro. Se o store nao sabe
+        devolver embeddings, ou falhar, o comportamento antigo e mantido.
+        """
+        get_embeddings = getattr(self.store, "get_embeddings", None)
+        if not documents or not callable(get_embeddings):
+            return documents
+        try:
+            vectors = await asyncio.to_thread(
+                get_embeddings, tenant_id, list(documents)
+            )
+        except Exception:
+            logger.warning("lexical_only_scoring_skipped", exc_info=True)
+            return documents
+
+        scored: dict[str, dict[str, Any]] = {}
+        for chunk_id, document in documents.items():
+            enriched = dict(document)
+            vector = vectors.get(chunk_id)
+            if vector:
+                enriched["vector_score"] = cosine_score(query_embedding, vector)
+            scored[chunk_id] = enriched
+        return scored
 
     async def _chunks_from_graph(
         self, tenant_id: str, relations: list[KagRelation]

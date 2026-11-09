@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.services.bm25_index import Bm25Index, reference_tokens, tokenize
 from app.services.retrieval import Candidate, deduplicate, fuse, select_context
 
@@ -220,3 +222,47 @@ def test_select_context_drops_weak_lexical_match() -> None:
     candidate.exact_reference = True
     candidate.lexical_score = 0.1
     assert select_context([candidate], min_relevance_score=0.45, max_context_chunks=4) == []
+
+
+# ---------------------------------------------------------------------------
+# L11: candidatos so-BM25 recebem o cosseno real
+# ---------------------------------------------------------------------------
+
+
+def test_cosine_score_is_clamped_and_safe() -> None:
+    from app.services.retrieval import cosine_score
+
+    assert cosine_score([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+    assert cosine_score([1.0, 0.0], [0.0, 1.0]) == 0.0
+    assert cosine_score([1.0, 0.0], [-1.0, 0.0]) == 0.0  # negativo vira 0
+    assert cosine_score([], [1.0]) == 0.0
+    assert cosine_score([0.0, 0.0], [1.0, 0.0]) == 0.0
+    assert cosine_score([1.0], [1.0, 2.0]) == 0.0  # dimensoes diferentes
+
+
+def test_fuse_uses_vector_score_supplied_for_bm25_only_hit() -> None:
+    from app.services.bm25_index import Bm25Hit
+
+    lexical = {
+        "sngpc": {
+            "text": "O SNGPC registra a movimentacao de controlados.",
+            "metadata": {"document_id": "d9", "chunk": 3},
+            "vector_score": 0.62,
+        }
+    }
+    fused = fuse([], [Bm25Hit("sngpc", 7.0)], lexical, question="o que e SNGPC?")
+
+    assert fused[0].vector_score == pytest.approx(0.62)
+    # com score real acima do limiar, o chunk so-lexico agora entra no contexto
+    selected = select_context(fused, min_relevance_score=0.45, max_context_chunks=4)
+    assert [candidate.chunk_id for candidate in selected] == ["sngpc"]
+
+
+def test_bm25_only_hit_without_vector_score_is_still_filtered() -> None:
+    """Sem cosseno conhecido o comportamento antigo (descartar) e mantido."""
+    from app.services.bm25_index import Bm25Hit
+
+    lexical = {"x": {"text": "texto sem relacao", "metadata": {"document_id": "d", "chunk": 1}}}
+    fused = fuse([], [Bm25Hit("x", 3.0)], lexical, question="outra coisa")
+    assert fused[0].vector_score == 0.0
+    assert select_context(fused, min_relevance_score=0.45, max_context_chunks=4) == []
